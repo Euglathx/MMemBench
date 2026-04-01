@@ -681,6 +681,110 @@ TASK_STRATEGIES: Dict[str, TaskStrategy] = {
         ],
         ground_truth_extraction="answer"
     ),
+
+    # ============================================================
+    # NEW: Relation Comparison (RC) — appended, no existing keys modified
+    # ============================================================
+    "relation_comparison": TaskStrategy(
+        task_type="relation_comparison",
+        name="Relation Comparison",
+        description="Compare relationships between objects across multiple images",
+        phases=[
+            {
+                "name": "grounding",
+                "description": "Establish baseline understanding of objects and relationships in each image",
+                "actions": ["guidance", "follow_up", "fine_grained"],
+                "min_turns": 2,
+                "goal": "Model accurately identifies objects and their relationships in each image"
+            },
+            {
+                "name": "relationship_probing",
+                "description": "Probe specific relationships and co-occurring objects",
+                "actions": ["follow_up", "fine_grained", "guidance"],
+                "min_turns": 2,
+                "goal": "Model correctly describes relational details (count, co-occurring objects)"
+            },
+            {
+                "name": "noise_injection",
+                "description": "Test robustness with cross-image confusion and misleading",
+                "actions": ["mislead", "distraction", "cross_image_confusion"],
+                "min_turns": 2,
+                "goal": "Model resists cross-image confusion about relationships"
+            },
+            {
+                "name": "final_evaluation",
+                "description": "Ask the actual relationship comparison question",
+                "actions": ["fine_grained", "consistency_check"],
+                "min_turns": 1,
+                "goal": "Model gives correct comparison answer with evidence"
+            }
+        ],
+        difficulty_progression={
+            1: ["guidance", "follow_up", "fine_grained"],
+            2: ["guidance", "follow_up", "fine_grained", "mislead", "redundancy"],
+            3: ["guidance", "follow_up", "fine_grained", "mislead", "distraction",
+                "cross_image_confusion", "consistency_check"],
+            4: ["all"]
+        },
+        final_question_templates=[
+            "综合你观察到的关系信息，{question}",
+            "Based on the relationships you observed, {question}",
+            "Comparing the relationships across images, {question}"
+        ],
+        ground_truth_extraction="evidence"
+    ),
+
+    # ============================================================
+    # NEW: Logical Noise Filtering (LNF) — appended, no existing keys modified
+    # ============================================================
+    "logical_noise_filtering": TaskStrategy(
+        task_type="logical_noise_filtering",
+        name="Logical Noise Filtering",
+        description="Select correct descriptions of images while filtering logical distractors",
+        phases=[
+            {
+                "name": "image_observation",
+                "description": "Present image and have model describe what it sees",
+                "actions": ["guidance", "follow_up", "fine_grained"],
+                "min_turns": 2,
+                "goal": "Model provides accurate description of the image content"
+            },
+            {
+                "name": "option_presentation",
+                "description": "Present description options for model to choose from",
+                "actions": ["follow_up", "fine_grained", "guidance"],
+                "min_turns": 2,
+                "goal": "Model evaluates options against visual evidence"
+            },
+            {
+                "name": "distractor_injection",
+                "description": "Inject distractor options and test robustness",
+                "actions": ["mislead", "distraction", "redundancy"],
+                "min_turns": 2,
+                "goal": "Model resists logical distractors and maintains correct choice"
+            },
+            {
+                "name": "final_selection",
+                "description": "Ask for final selection with justification",
+                "actions": ["fine_grained", "consistency_check"],
+                "min_turns": 1,
+                "goal": "Model selects correct description with visual evidence"
+            }
+        ],
+        difficulty_progression={
+            1: ["guidance", "follow_up", "fine_grained"],
+            2: ["guidance", "follow_up", "fine_grained", "mislead", "redundancy"],
+            3: ["guidance", "follow_up", "fine_grained", "mislead", "distraction",
+                "redundancy", "consistency_check"],
+            4: ["all"]
+        },
+        final_question_templates=[
+            "根据你的观察，哪个描述最准确？{question}",
+            "Based on what you see, which description is correct? {question}",
+            "Filter out the wrong descriptions. {question}"
+        ],
+        ground_truth_extraction="evidence"
+    ),
 }
 
 

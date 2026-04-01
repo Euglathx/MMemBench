@@ -26,6 +26,8 @@ from .task_config import TASK_CONFIGS, CORE_MODEL_SYSTEM_PROMPT
 from .context_builder import ContextBuilder
 from .simulator_state import SimulatorState, Phase, ResponseEvaluation
 from .entity_extractor import EntityExtractor
+# === Phase 2 Task 2.5: Image policy imports ===
+from .image_policy import ImageInjectionPolicy, ImagePolicyManager
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,9 @@ class LLMUserSimulator:
         llm_client: Optional[LLMClient] = None,
         max_turns_per_task: int = 10,
         verbose: bool = True,
-        entity_extraction_mode: Literal["simple", "llm"] = "simple"
+        entity_extraction_mode: Literal["simple", "llm"] = "simple",
+        # === Phase 2 Task 2.5: Image policy parameter ===
+        image_injection_policy: ImageInjectionPolicy = ImageInjectionPolicy.SEND_ALL_EVERY_TURN
     ):
         """
         Initialize the simulator.
@@ -66,6 +70,7 @@ class LLMUserSimulator:
             max_turns_per_task: Maximum turns before forcing next task
             verbose: Print detailed progress
             entity_extraction_mode: Entity 提取模式 ("simple" 或 "llm")
+            image_injection_policy: Image injection strategy (Task 2.5)
         """
         self.llm_client = llm_client or LLMClient()
         self.max_turns_per_task = max_turns_per_task
@@ -79,10 +84,13 @@ class LLMUserSimulator:
             llm_client=self.llm_client if entity_extraction_mode == "llm" else None
         )
 
+        # === Phase 2 Task 2.5: Image policy manager ===
+        self.image_policy = ImagePolicyManager(image_injection_policy)
+
         # 状态
         self.current_task: Optional[Dict[str, Any]] = None
         self.state: Optional[SimulatorState] = None
-        self.images_shown: List[str] = []
+        self.images_shown: List[str] = []  # Kept for backward compatibility
         self.image_descriptions: List[str] = []  # 图片描述缓存
 
         # Logging
@@ -515,24 +523,42 @@ class LLMUserSimulator:
         return result
 
     def _get_images_to_send(self, action: str) -> List[str]:
-        """确定要发送给待测 VLM 的图片"""
-        images_to_send = []
+        """确定要发送给待测 VLM 的图片
+
+        Phase 2 Task 2.5: Updated to use unified ImagePolicyManager
+        """
+        if not self.current_task:
+            return []
+
         task_images = self.current_task.get("images", [])
+        if not task_images:
+            return []
 
-        if action == "guidance" and task_images:
-            # For guidance, show next image if not all shown
-            if len(self.images_shown) < len(task_images):
-                next_img_idx = len(self.images_shown)
-                next_img = task_images[next_img_idx]
+        # === Phase 2 Task 2.5: Use ImagePolicyManager for unified strategy ===
+        # First, resolve all image paths
+        all_resolved_images = []
+        for img_rel_path in task_images:
+            # Construct full path (same logic as before)
+            img_path = Path("generated_tasks_v2/run_12") / img_rel_path
+            if img_path.exists():
+                all_resolved_images.append(str(img_path))
+            else:
+                # Try without prefix
+                img_path_direct = Path(img_rel_path)
+                if img_path_direct.exists():
+                    all_resolved_images.append(str(img_path_direct))
 
-                # Construct full path
-                img_path = Path("generated_tasks_v2/run_12") / next_img
-                if img_path.exists():
-                    images_to_send.append(str(img_path))
-                    self.images_shown.append(next_img)
+        # Use policy manager to decide which images to send
+        images_to_send = self.image_policy.get_images_to_send(
+            all_images=all_resolved_images,
+            turn=self.state.turn_count if self.state else 1,
+            action=action
+        )
 
-                    # 记录图片描述（如果有）
-                    self.image_descriptions.append(f"Image {next_img_idx}: {next_img}")
+        # Update images_shown for backward compatibility tracking
+        for img in images_to_send:
+            if img not in self.images_shown:
+                self.images_shown.append(img)
 
         return images_to_send
 

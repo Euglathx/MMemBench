@@ -1,0 +1,306 @@
+# ===========================================
+# M3Bench .gitignore
+# VLM Memory & Reasoning Evaluation Framework
+# ===========================================
+
+# ==================== Python ====================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebug.log
+
+# Translations
+*.mo
+*.pot
+
+# ==================== Jupyter Notebooks ====================
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+*.ipynb_checkpoints/
+
+# ==================== IDE & Editors ====================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+
+# Emacs
+*~
+\#*\#
+.#*
+
+# Spyder
+.spyproject
+.spyderproject
+
+# ==================== OS Generated ====================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+Icon
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+
+# ==================== Environment ====================
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Environment variables (IMPORTANT: Contains API keys!)
+.env
+.env.local
+.env.*.local
+*.env
+config.local.yaml
+secrets.yaml
+
+# API Keys and Credentials (NEVER COMMIT!)
+**/api_key*
+**/apikey*
+**/*_key.txt
+**/*_key.json
+credentials.json
+credentials.yaml
+service_account.json
+*.pem
+*.key
+
+# ==================== Data & Datasets ====================
+# Main data directory (too large, provide download instructions)
+data/
+!data/sample/
+!data/README.md
+
+# Downloaded datasets
+MSCOCO/
+MSCOCO14/
+VisualGenome/
+VisualCommenReasnoning/
+VisualCommonsenseReasoning/
+VCR/
+MMMU/
+MM-NIAH/
+MMDocIR/
+DocVQA/
+Sherlock/
+GQA/
+ScienceQA/
+Mantis/
+InfoGraphVQA/
+SlideVQA/
+MMStar/
+RealworldQA/
+
+# Dataset cache
+cache/
+.cache/
+huggingface/
+.huggingface/
+
+# Large files
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+*.7z
+*.rar
+*.parquet
+*.arrow
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+!data/sample/*.parquet
+
+# ==================== Generated Files ====================
+# Generated task outputs (regenerated each run)
+generated_tasks/
+generated_tasks_v2/
+generated_tasks_unified/
+!generated_tasks_v2/README.md
+!generated_tasks_v2/sample/
+
+# ==================== Experiment Outputs ====================
+# Logs (keep structure, ignore contents)
+simulator_test_log/*
+!simulator_test_log/README.md
+!simulator_test_log/.gitkeep
+
+# Results
+results/
+batch_test_results/
+experiment_images/
+output/
+outputs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+temp/
+tmp/
+
+# ==================== Model Weights ====================
+# PyTorch model weights
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# TensorFlow
+*.h5
+saved_model/
+checkpoints/
+
+# ONNX
+*.onnx
+
+# Hugging Face models (downloaded at runtime)
+models/
+!models/__init__.py
+!models/*.py
+
+# ==================== Logs ====================
+*.log
+logs/
+*.out
+*.err
+nohup.out
+
+# ==================== Documentation Build ====================
+docs/_build/
+site/
+.mkdocs/
+
+# ==================== Misc ====================
+# Backup files
+*.bak
+*.orig
+*.backup
+
+# Debug files
+debug/
+*.debug
+
+# Profile files
+*.prof
+*.lprof
+
+# Test artifacts
+test_output/
+test_results/
+.benchmarks/
+
+# Memory dumps
+*.dump
+core
+core.*
+
+# Analysis reports (can regenerate)
+MISSING_FILES_ANALYSIS.md
+
+# ==================== Project Specific ====================
+# Human annotations (optional - may contain sensitive data)
+# human_annotations/
+# !human_annotations/README.md
+# !human_annotations/guidelines/
+
+# Run scripts with local paths
+run_local_*.sh
+run_local_*.bat
+local_config.yaml
+
+# Experiment-specific configs (may contain API keys)
+experiment_configs/
+!experiment_configs/template.yaml
+
+# ==================== Keep These Files ====================
+# Empty directories (use .gitkeep to preserve structure)
+!**/.gitkeep

@@ -1,0 +1,11 @@
+task_id,turn,llm_correctness,llm_faithfulness,llm_robustness,llm_consistency,llm_memory_retention,expected_score,actual_score,discrepancy,level_passed,threshold,root_cause
+abr_example_001,1,10,10,10,10,10,0.688,0.664,0.024,False,0.7,hard_scores not overridden by llm_judge
+ac_mscoco_001,3,10,9,10,9,10,0.667,0.68,-0.013,False,0.7,hard_scores not overridden by llm_judge
+task_003,1,10,10,8,9,10,0.649,0.68,-0.031,False,0.7,hard_scores have too much influence with wrong defaults
+task_004,1,9,9,9,9,9,0.628,0.6900000000000001,-0.062,False,0.7,hard_scores have too much influence with wrong defaults
+task_005,1,10,10,10,9,10,0.679,0.65,0.029,False,0.7,hard_scores have too much influence with wrong defaults
+task_006,1,9,9,8,9,9,0.613,0.66,-0.047,False,0.7,hard_scores have too much influence with wrong defaults
+task_007,1,10,10,9,9,10,0.664,0.67,-0.006,False,0.7,hard_scores have too much influence with wrong defaults
+task_008,1,9,9,10,9,9,0.643,0.68,-0.037,False,0.7,hard_scores have too much influence with wrong defaults
+task_009,1,10,10,8,9,10,0.649,0.6900000000000001,-0.041,False,0.7,hard_scores have too much influence with wrong defaults
+task_010,1,9,9,9,9,9,0.628,0.65,-0.022,False,0.7,hard_scores have too much influence with wrong defaults

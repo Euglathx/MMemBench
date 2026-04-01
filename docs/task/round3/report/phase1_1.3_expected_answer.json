@@ -1,0 +1,164 @@
+{
+  "validation_id": "1.3_expected_answer_tracking",
+  "timestamp": "2026-02-03T13:44:10.007223",
+  "status": "FAIL",
+  "expected_answer_sources": {
+    "total_turns": 264,
+    "using_task_level": 264,
+    "should_use_turn_level": 71,
+    "task_level_percentage": 100.0,
+    "by_phase": {
+      "grounding": {
+        "count": 56,
+        "should_use_turn_level": 56,
+        "misjudged": 2
+      },
+      "noise_injection": {
+        "count": 56,
+        "should_use_turn_level": 0,
+        "misjudged": 0
+      },
+      "stress_test": {
+        "count": 56,
+        "should_use_turn_level": 0,
+        "misjudged": 0
+      },
+      "final_evaluation": {
+        "count": 56,
+        "should_use_turn_level": 0,
+        "misjudged": 0
+      },
+      "entity_grounding": {
+        "count": 5,
+        "should_use_turn_level": 5,
+        "misjudged": 2
+      },
+      "chain_navigation": {
+        "count": 10,
+        "should_use_turn_level": 10,
+        "misjudged": 2
+      },
+      "chain_verification": {
+        "count": 10,
+        "should_use_turn_level": 0,
+        "misjudged": 0
+      },
+      "noise_during_reasoning": {
+        "count": 10,
+        "should_use_turn_level": 0,
+        "misjudged": 0
+      },
+      "final_answer": {
+        "count": 5,
+        "should_use_turn_level": 0,
+        "misjudged": 0
+      }
+    }
+  },
+  "misjudged_cases": [
+    {
+      "task_id": "abr_mscoco_1",
+      "turn": 1,
+      "phase": "entity_grounding",
+      "question": "Before we solve the full puzzle, let's start with the basics. Can you locate the person in the image and describe where they are situated?",
+      "model_response": "The person in the image is on the right side of the frame, facing left. They are standing in what appears to be a commercial kitchen or bakery, with stainless steel counters and equipment visible in the background. They are wearing a red shirt and a hairnet.",
+      "expected_answer_used": "The final object is a knife",
+      "should_be": "Model should identify/describe the person",
+      "evaluation_result": "FAIL (score=0.66)",
+      "should_be_result": "PASS (turn-specific)",
+      "evidence": "LLM gave 10/10 but level_passed=False (intermediate phase 'entity_grounding')",
+      "llm_correctness": 10
+    },
+    {
+      "task_id": "abr_mscoco_1",
+      "turn": 2,
+      "phase": "chain_navigation",
+      "question": "Great. Now, following the spatial path in the original request, look immediately to the left of that person. What distinct object do you see there?",
+      "model_response": "Immediately to the left of the person, there is a large, rectangular cake with white frosting. It has faint grid lines scored into the top of the frosting.",
+      "expected_answer_used": "The final object is a knife",
+      "should_be": "The object left the person",
+      "evaluation_result": "FAIL (score=0.61)",
+      "should_be_result": "PASS (turn-specific)",
+      "evidence": "Score 0.61 close to threshold but failed (intermediate phase)",
+      "llm_correctness": 7
+    },
+    {
+      "task_id": "abr_mscoco_2",
+      "turn": 3,
+      "phase": "chain_navigation",
+      "question": "Great, you identified the skateboard below the person. Now, look to one side of that skateboard. What object do you see immediately to its left?",
+      "model_response": "Immediately to the left of the skateboard is a bicycle.",
+      "expected_answer_used": "The final object is a bicycle",
+      "should_be": "The object below the person",
+      "evaluation_result": "FAIL (score=0.66)",
+      "should_be_result": "PASS (turn-specific)",
+      "evidence": "LLM gave 10/10 but level_passed=False (intermediate phase 'chain_navigation')",
+      "llm_correctness": 10
+    },
+    {
+      "task_id": "abr_mscoco_3",
+      "turn": 1,
+      "phase": "entity_grounding",
+      "question": "Let's start by finding the first object mentioned. Can you locate the skateboard in the image and describe its position?",
+      "model_response": "The skateboard is positioned beneath the person, appearing to be in mid-air, having just been jumped off of or about to be landed on.",
+      "expected_answer_used": "The final object is a chair",
+      "should_be": "Model should identify/describe the skateboard",
+      "evaluation_result": "FAIL (score=0.57)",
+      "should_be_result": "PASS (turn-specific)",
+      "evidence": "Response focuses on intermediate step, not final answer (correctness=7)",
+      "llm_correctness": 7
+    },
+    {
+      "task_id": "ac_mscoco_0",
+      "turn": 1,
+      "phase": "grounding",
+      "question": "```json { \"action\": \"fine_grained\", \"message\": \"Let's begin by examining Image 1. Could you precisely describe the vertical position of the person relative to the top and bottom edges of the frame?\", ",
+      "model_response": "The person in Image 1, the young girl, occupies a significant portion of the vertical frame. Her head is quite close to the top edge, and her feet (or the bottom of her torso, as her lower body is not fully visible) are positioned roughly around the middle of the frame, perhaps slightly below.",
+      "expected_answer_used": "Image 2 has the person bottommost",
+      "should_be": "Model should describe relevant attributes",
+      "evaluation_result": "FAIL (score=0.68)",
+      "should_be_result": "PASS (turn-specific)",
+      "evidence": "LLM gave 8/10 but level_passed=False (intermediate phase 'grounding')",
+      "llm_correctness": 8
+    },
+    {
+      "task_id": "ac_mscoco_1",
+      "turn": 1,
+      "phase": "grounding",
+      "question": "Let's start with the first image (image_0.png). How many people can you see in this image? Please describe their locations briefly.",
+      "model_response": "In the first image, there are three people visible.\n\n1.  **A young girl** is prominently featured on the left side of the frame, with her mouth wide open, looking towards a lit candle in a bowl.\n2.  **An adult** (likely female, based on the hand) is partially visible behind the girl and to her right",
+      "expected_answer_used": "Image 0 has 3 person(s)",
+      "should_be": "Model should describe relevant attributes",
+      "evaluation_result": "FAIL (score=0.66)",
+      "should_be_result": "PASS (turn-specific)",
+      "evidence": "LLM gave 10/10 but level_passed=False (intermediate phase 'grounding')",
+      "llm_correctness": 10
+    }
+  ],
+  "misjudged_count": 6,
+  "code_analysis": {
+    "supports_turn_level_expected": false,
+    "TaskState_has_turn_ground_truth": false,
+    "evaluator_uses": "task-level expected_answer (self.task_state.expected_answer)",
+    "simulator_generates_turn_expected": false,
+    "code_locations": {
+      "evaluator_call": "strategic_simulator.py:818-827 - passes self.task_state.expected_answer",
+      "TaskState_definition": "strategic_simulator.py:55-79 - no turn_ground_truths field",
+      "evaluate_response": "evaluator.py:852-874 - expected_answer parameter is task-level",
+      "TASK_STRATEGIES": "action_space.py:528-684 - defines phases but not per-turn expected"
+    },
+    "missing_components": [
+      "TurnGroundTruth dataclass",
+      "turn_ground_truths field in TaskState",
+      "Turn-level expected_answer generation in _generate_question()",
+      "Turn-level expected_answer passing to evaluator.evaluate_response()"
+    ]
+  },
+  "root_cause": {
+    "primary_issue": "No turn-level expected_answer mechanism implemented",
+    "code_location": "strategic_simulator.py:818-827 - always passes task_state.expected_answer to evaluator",
+    "design_gap": "TASK_STRATEGIES defines phases with goals but not per-turn expected answers"
+  },
+  "severity": "P1_HIGH",
+  "recommended_fix": "Implement TurnGroundTruth data structure and update evaluation flow"
+}

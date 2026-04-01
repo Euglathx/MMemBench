@@ -1,0 +1,16 @@
+# M3Bench DataProvider Requirements
+
+# Core dependencies
+jsonlines>=3.1.0        # For reading .jsonl files
+Pillow>=10.0.0         # For image handling
+numpy>=1.24.0          # For numerical operations
+
+# Optional dependencies for full support
+# datasets>=2.14.0     # For HuggingFace datasets (MMMU, DocVQA, etc.)
+# pyarrow>=13.0.0      # For parquet files (ScienceQA, RealworldQA, etc.)
+# pandas>=2.0.0        # For data manipulation
+
+# Development dependencies
+# pytest>=7.4.0        # For testing
+# black>=23.0.0        # For code formatting
+# mypy>=1.5.0          # For type checking

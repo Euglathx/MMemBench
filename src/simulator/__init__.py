@@ -75,6 +75,18 @@ from .reasoning_chain_builder import (
     ChainExecutionState
 )
 
+# Dialogue & Testing Improvement (state-aware extensions)
+from .state_schema_types import StateSchema, StateVariable
+from .state_aware_evaluator import StateAwareEvaluator
+from .task_progress import TaskProgress, PhaseCompletion
+from .prompt_router import PromptRouter
+from .stateful_simulator import StatefulStrategicSimulator
+from .interleaved_batch import (
+    InterleavedBatchSimulator,
+    SharedConversationWindow,
+    InterleavedScheduler
+)
+
 __all__ = [
     # New architecture
     'StrategicSimulator',
@@ -125,5 +137,17 @@ __all__ = [
     'ReasoningChainBuilder',
     'ChainQuery',
     'ChainExecutionManager',
-    'ChainExecutionState'
+    'ChainExecutionState',
+
+    # Dialogue & Testing Improvement
+    'StateSchema',
+    'StateVariable',
+    'StateAwareEvaluator',
+    'TaskProgress',
+    'PhaseCompletion',
+    'PromptRouter',
+    'StatefulStrategicSimulator',
+    'InterleavedBatchSimulator',
+    'SharedConversationWindow',
+    'InterleavedScheduler',
 ]

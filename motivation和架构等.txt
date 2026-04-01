@@ -1,0 +1,78 @@
+动态化的目的：
+1.让模型不具备全局视野，逼迫其逐步寻找证据。原始的测试方式给予模型全局视野，这实际上是在测试模型的长文本阅读理解能力。对于推理能力而言，这种测试方式让模型具有作弊的潜在可能，当需要提供证据的时候，它已经知道了后面发生的结果，因此可以利用后见之明（hindsight）来建立虚假的逻辑连接。我们希望模型能在推理的每一步中真正知道“之前存储的哪些信息是有用的”，即内部能够存储大量证据，并利用这些证据有效得到最新结论，维护证据之间的逻辑依赖。举例来说，把模型比作侦探，它可能在破案的第5分钟发现一个脚印，但第50分钟才能抓获犯人，模型必须在第5分钟就判断出这个脚印意味着什么，总结出知识并进行存储。（这里似乎可以画个示意图）
+采用训练集和测试集分割的手段也是完成这个目的的有效手段，即测试集的答案不能通过训练集中的上下文简单地得出，其强迫模型做出context-knowledge-answer的适应，从训练集上下文得出knowledge，再从knowledge判断出测试集的答案是什么。这是一个交互积累（Context Management） -> 记忆冻结（Snapshot） -> 离线回答（Reasoning）” 的模式，在学术界也是一种非常受认可的评估范式（类似于把 Memory 视为 Knowledge Base 的构建过程）。
+2.测试的是“状态的更新”，即需要在对话中对状态进行维护，而传统的测试方法只有上下文没有状态，更没有更新。这里测的不只是记忆的信息提取，更注重其管理过程，要体现这个“过程”就必须使用动态测试。MemoryBench虽然在时间上完成了动态化，并且创新性地引入了feedback信号，使得交互式的测试框架变得更加完善，但是其并没有关注状态的动态改变，核心测试任务本质上仍然是对信息的检索和提取，在多数任务中，事实本身在整个对话过程中是不变的，模型是被动地接收和检索信息。
+3.总结：对上下文管理层级，通过人为的状态干预，测试了模型对记忆鲁棒性和任务内状态一致性的保持能力，对推理层级来说，通过将记忆积累和回答问题解耦，测试了模型对证据之间依赖关系的理解能力，提升了更高广度下模型的推理能力。
+
+数据集：
+可以选用针对scene graph或者其他知识图rag的数据集。
+Visual Genome，
+GQA Dataset；
+
+
+数据集构建方式：
+定义物体集合O{o1,o2,...}, 
+物体oi的属性集合A(oi) = A{ai1, ai2, ...}，如颜色，大小，数量，动作等
+物体oi与oj的属性集合R= {r(oi, oj). r(op,oq), ...} ，如位置关系，动作和语义关系
+第一类问题模板：带空间属性的属性识别
+第一步：找到具有唯一属性的起始节点，即存在a∈A(ostart), 使得对于任意ox≠ostart，a不属于A(ox)，构建名词模板（the object with attribute a)替换ostart
+第二步，从ostart开始沿R的边延伸，找唯一的关系，即存在r(obefore, onext), 使得对于任意ox≠obefore， r(obefore, onext) ≠ r(ox, onext)，随后用模板 ( the object r(obefore, onext) (obefore) ） 替换onext。   如（obefore左边的那个物体）。    如此迭代即可
+也可以创建一个关系关联，特定用于属性匹配，比如存在onext， 使得存在aonext ∈ A（obefore）且对于任意ox≠obefore，onext， aonext不属于A(ox) ，使用模板（the object that has the same (attribute type) with obefore) 来替换onext即可。
+第三步，到达预定的链条长度之后，终止循环。 最后询问，oend的ai即可。举例：（找出图中，穿着红衣服的人 正在看着的物体 左边的 物体， 与它具有相同大小的物体 的颜色是什么？ 
+
+第二类问题模板：跨图属性对比
+
+
+
+
+测试方式：
+必须要求模型是有遗忘场景，或者根本是不同样本的问题。
+
+
+
+
+
+
+[入口脚本 / Entry Points]
+(负责参数配置、启动测试循环)
+  |--- run_dynamic_eval.py  (主程序: 加载配置 -> 初始化组件 -> 跑循环 -> 存结果)
+  |--- generate_charts.py   (可视化分析结果)
+
+[核心逻辑 / Core Logic]
+1. Orchestrator (src.orchestrator)
+   (总控: 协调 Simulator 和 VLM 的交互循环，管理全局 Session)
+     |
+2. User Simulator (src.simulator.agent) <--- [核心修改点]
+   (模拟用户行为，包含 Policy 和 Length Controller)
+     |--- ActionSelector (根据状态选择动作: Ask, Update, Distract...)
+     |--- ResponseParser (解析 VLM 回复，提取关键信息用于状态更新)
+     |--- LengthController (规则模块: 监控 Context 长度，动态注入 Padding/Chit-chat)
+     |--- PromptTemplates (你的各种动作对应的语言模板库)
+
+3. VLM Interface (src.models)
+   (被测系统的统一封装)
+     |--- BaseVLM (抽象类)
+     |--- GPT4o_Adapter, Gemini_Adapter, LLaVA_Adapter ...
+
+[数据层 / Data Layer] (对应 Data Provider)
+src.data_provider
+  |--- TaskLoader (加载你的表格中定义的任务: 实体对齐, 布局记忆...)
+  |--- KnowledgeGraphGenerator (基于图片/文档生成结构化 KG)
+  |--- DynamicScenarioBuilder (构建动态场景: 比如 "时序记忆" 需要生成多帧变化的数据)
+
+[评估层 / Evaluation Layer]
+src.evaluator
+  |--- Judge (LLM-as-a-Judge 或 规则匹配)
+       (输入: Query, VLM_Response, Ground_Truth_Node)
+       (输出: Score, Reasoning)
+  |--- MetricTracker (记录每一轮的 Pass/Fail, Token 消耗, 延迟)
+
+[工具库 / Utils]
+src.utils
+  |--- logger.py
+  |--- image_processor.py (处理 OCR, 裁剪, 标注)
+
+
+除了run之外还需要一个测试接口，单独测user simulator和模型之间交互能不能跑通。
+padding具体来说有什么好的做法吗？只是单纯地填充无意义的内容好像也有些不太真实。最好是能够根据每个动作策略，制定生成不同长度的回复的办法，或者一个通用的办法也行，但是最后至少要是流畅的自然语言
+

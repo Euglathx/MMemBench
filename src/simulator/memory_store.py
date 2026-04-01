@@ -23,6 +23,10 @@ class TurnRecord:
     key_info: List[str] = field(default_factory=list)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
+    # === Phase 2 Task 2.4: Truth validation fields ===
+    is_correct: Optional[bool] = None  # Whether the response is validated as correct
+    claim_validation: Optional[Dict[str, Any]] = None  # Detailed validation results
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "turn_id": self.turn_id,
@@ -31,7 +35,9 @@ class TurnRecord:
             "model_response": self.model_response,
             "evaluation": self.evaluation,
             "key_info": self.key_info,
-            "timestamp": self.timestamp
+            "timestamp": self.timestamp,
+            "is_correct": self.is_correct,
+            "claim_validation": self.claim_validation
         }
 
 
@@ -114,7 +120,10 @@ class MemoryStore:
         user_message: str,
         model_response: str,
         evaluation: Optional[Dict[str, Any]] = None,
-        key_info: Optional[List[str]] = None
+        key_info: Optional[List[str]] = None,
+        # === Phase 2 Task 2.4: Truth validation parameters ===
+        is_correct: Optional[bool] = None,
+        claim_validation: Optional[Dict[str, Any]] = None
     ):
         """Add a conversation turn"""
         if self.current_task is None:
@@ -126,7 +135,9 @@ class MemoryStore:
             user_message=user_message,
             model_response=model_response,
             evaluation=evaluation or {},
-            key_info=key_info or []
+            key_info=key_info or [],
+            is_correct=is_correct,
+            claim_validation=claim_validation
         )
 
         self.current_task.turns.append(turn)
@@ -173,8 +184,23 @@ class MemoryStore:
         self.completed_tasks.append(self.current_task)
         self.current_task = None
 
-    def get_conversation_history(self, n_turns: Optional[int] = None) -> List[Dict[str, str]]:
-        """Get conversation history as list of messages"""
+    def get_conversation_history(
+        self,
+        n_turns: Optional[int] = None,
+        # === Phase 2 Task 2.4: Memory filtering parameters ===
+        filter_incorrect: bool = False,
+        score_threshold: float = 0.5
+    ) -> List[Dict[str, str]]:
+        """Get conversation history as list of messages
+
+        Args:
+            n_turns: Optional limit on number of turns to return
+            filter_incorrect: If True, exclude turns with low scores or marked as incorrect
+            score_threshold: Minimum score threshold for filtering (default 0.5)
+
+        Returns:
+            List of message dicts with 'role' and 'content' keys
+        """
         if self.current_task is None:
             return []
 
@@ -183,7 +209,23 @@ class MemoryStore:
             turns = turns[-n_turns:]
 
         history = []
+        filtered_count = 0
+
         for turn in turns:
+            # === Phase 2 Task 2.4: Filtering logic ===
+            if filter_incorrect:
+                # Check is_correct flag first (if available)
+                if turn.is_correct is not None:
+                    should_include = turn.is_correct
+                else:
+                    # Fall back to evaluation score
+                    eval_score = turn.evaluation.get("score", 1.0)
+                    should_include = eval_score >= score_threshold
+
+                if not should_include:
+                    filtered_count += 1
+                    continue
+
             history.append({"role": "user", "content": turn.user_message})
             history.append({"role": "assistant", "content": turn.model_response})
 

@@ -20,7 +20,8 @@ from src.simulator import (
     BatchConfig,
     LLMClient,
     Evaluator,
-    EvaluationMode
+    EvaluationMode,
+    StateAwareEvaluator,
 )
 
 logging.basicConfig(
@@ -112,7 +113,7 @@ def main():
         target_model="gpt-4o",  # 多模态模型
         weak_model="claude-3-5-haiku-20241022-c"
     )
-    evaluator = Evaluator(mode=EvaluationMode.STRESS_TEST)
+    evaluator = StateAwareEvaluator(mode=EvaluationMode.STRESS_TEST)
 
     # 配置批处理
     config = BatchConfig(
@@ -121,7 +122,9 @@ def main():
         max_turns_per_task=15,
         transition_style='natural',
         enable_cross_task_memory_test=True,
-        cross_task_memory_interval=3
+        cross_task_memory_interval=3,
+        enable_stateful_runtime=True,
+        require_state_schema=True,
     )
 
     batch_simulator = BatchTaskSimulator(

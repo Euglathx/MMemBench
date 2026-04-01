@@ -1,0 +1,163 @@
+# Query生成配置 (窗口3)
+# 此配置文件控制Query生成的行为，包括LLM生成和长度控制
+
+query_generation:
+  # 生成模式: rule / llm / hybrid
+  # - rule: 纯规则模板生成（默认，无需LLM）
+  # - llm: 纯LLM生成（需要配置llm_client）
+  # - hybrid: 混合模式（根据概率在LLM和规则之间切换）
+  mode: "hybrid"
+
+  # LLM相关配置
+  llm:
+    # 是否启用LLM生成
+    enabled: true
+    # 在hybrid模式下使用LLM的概率 (0.0-1.0)
+    probability: 0.7
+    # 创造性级别范围 (temperature映射)
+    min_creativity: 0.3
+    max_creativity: 0.9
+    # 最大重试次数（LLM生成失败时）
+    max_retries: 2
+    # 最大token数
+    max_tokens: 150
+
+  # 规则生成器配置
+  rule:
+    # 是否总是添加长度后缀
+    always_add_length_suffix: true
+    # 使用fallback query的条件
+    fallback_on_missing_params: true
+
+length_control:
+  # 长度选择策略
+  # - fixed: 固定长度
+  # - random: 随机选择
+  # - phase_based: 基于阶段选择
+  # - difficulty_based: 基于难度选择
+  # - adaptive: 自适应（综合考虑多因素，推荐）
+  strategy: "adaptive"
+
+  # 固定模式的默认长度
+  default_length: "medium"
+
+  # 各阶段的长度分布配置
+  # 概率值总和应为1.0
+  phase_distributions:
+    grounding:
+      short: 0.2
+      medium: 0.6
+      long: 0.2
+    noise_injection:
+      short: 0.4
+      medium: 0.4
+      long: 0.2
+    stress_test:
+      short: 0.5
+      medium: 0.3
+      long: 0.2
+    final:
+      short: 0.1
+      medium: 0.3
+      long: 0.6
+    final_evaluation:
+      short: 0.1
+      medium: 0.3
+      long: 0.6
+    entity_grounding:
+      short: 0.2
+      medium: 0.6
+      long: 0.2
+    chain_navigation:
+      short: 0.3
+      medium: 0.5
+      long: 0.2
+    chain_verification:
+      short: 0.2
+      medium: 0.4
+      long: 0.4
+
+  # 难度级别对长度的影响修正
+  # 正值增加该长度概率，负值减少
+  difficulty_modifiers:
+    level_1:  # 简单: 偏向详细回答
+      short: -0.1
+      medium: 0.0
+      long: 0.1
+    level_2:  # 中等: 均衡
+      short: 0.0
+      medium: 0.0
+      long: 0.0
+    level_3:  # 困难: 偏向简洁
+      short: 0.1
+      medium: 0.0
+      long: -0.1
+    level_4:  # 极难: 更偏向简洁
+      short: 0.2
+      medium: 0.0
+      long: -0.2
+
+  # 历史去重配置
+  history_dedup:
+    # 是否启用历史去重（避免连续相同长度）
+    enabled: true
+    # 检查最近多少轮
+    lookback_turns: 3
+    # 减少主导长度的系数
+    reduction_factor: 0.5
+    # 增加其他长度的系数
+    boost_factor: 1.25
+
+  # 是否记录详细日志
+  detailed_logging: true
+
+# 长度后缀定义（中文）
+length_suffixes:
+  short: "请用一句话简短回答。"
+  medium: "请用2-3句话回答。"
+  long: "请详细解释你的推理过程，包括你观察到的所有相关细节。"
+
+# 长度后缀定义（英文）
+length_suffixes_en:
+  short: "Please answer briefly in one sentence."
+  medium: "Please answer in 2-3 sentences."
+  long: "Please explain your reasoning process in detail, including all relevant observations."
+
+# 预设配置（可通过名称快速加载）
+presets:
+  default:
+    mode: "hybrid"
+    strategy: "adaptive"
+    llm_probability: 0.7
+
+  stress_test:
+    mode: "rule"
+    strategy: "phase_based"
+    detailed_logging: true
+
+  quick:
+    mode: "rule"
+    strategy: "fixed"
+    default_length: "short"
+
+  detailed:
+    mode: "llm"
+    strategy: "fixed"
+    default_length: "long"
+    llm_probability: 1.0
+
+  random:
+    mode: "hybrid"
+    strategy: "random"
+    llm_probability: 0.5
+
+# 统计和监控配置
+monitoring:
+  # 是否收集统计信息
+  collect_stats: true
+  # 统计信息输出路径
+  stats_output_dir: "logs/query_generation"
+  # 是否在每轮后打印统计
+  print_per_turn_stats: false
+  # 是否在任务结束后打印摘要
+  print_task_summary: true

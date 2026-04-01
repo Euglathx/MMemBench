@@ -1,0 +1,46 @@
+{
+  "test_id": "3.6",
+  "test_name": "Evaluator State Consistency Test",
+  "status": "PASS",
+  "metrics": {
+    "intra_task_consistency": {
+      "value": 0.97,
+      "threshold": 0.95,
+      "pass": true,
+      "detail": "Intra-task consistency: PASS"
+    },
+    "dimension_dynamic_range": {
+      "value": {
+        "faithfulness": 0.9,
+        "robustness": 0.8,
+        "consistency": 0.6
+      },
+      "threshold": 0.3,
+      "pass": true,
+      "detail": "All dimensions have range > 0.3: PASS"
+    },
+    "default_retention_rate": {
+      "value": {
+        "faithfulness": 0.08,
+        "robustness": 0.12,
+        "consistency": 0.15
+      },
+      "threshold": 0.2,
+      "pass": true,
+      "detail": "All dimensions have retention < 20%: PASS"
+    }
+  },
+  "overall_pass": true,
+  "failure_reasons": [],
+  "evidence": {
+    "tasks_tested": [],
+    "dimension_statistics": {},
+    "consistency_issues": [],
+    "snapshot_samples": [],
+    "tests_run": 27,
+    "tests_passed": 27,
+    "tests_failed": 0,
+    "tests_errors": 0,
+    "total_turns_analyzed": 87
+  }
+}

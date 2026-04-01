@@ -10,6 +10,8 @@ import logging
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
+from .task_id_generator import TaskIDGenerator
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,8 +33,11 @@ class AttributeComparisonGenerator:
         """
         samples = []
         n_images = task_config.get('n_images', 3)
-        comparison_types = task_config.get('comparison_types', ['count_comparison', 'same_object_different_attributes', 'find_by_attribute'])
+        comparison_types = task_config.get('comparison_types', [])
         target_categories = task_config.get('target_categories', 'all')
+
+        # 使用全局唯一ID生成器
+        id_gen = TaskIDGenerator(task_type='attribute_comparison', dataset='mscoco14')
 
         # Group samples by category
         category_to_samples = {}
@@ -89,7 +94,7 @@ class AttributeComparisonGenerator:
                 )
 
             if task:
-                task['task_id'] = f"ac_mscoco_{len(samples)}"
+                task['task_id'] = id_gen.next()
                 task['task_type'] = 'attribute_comparison'
                 task['metadata'] = {
                     'source_dataset': 'mscoco14',
@@ -121,12 +126,12 @@ class AttributeComparisonGenerator:
         answer_idx = max_indices[0]
 
         # Get question template
-        question_templates = templates.get('question_templates', [])
+        question_templates = templates.get('question_templates', {}).get('count_comparison', [])
         if not question_templates:
             question = f"Which image has the most {category}s?"
         else:
             template = random.choice(question_templates)
-            question = template.format(category=category, target_category=category)
+            question = template.format(category=category)
 
         answer = f"Image {answer_idx} has {max_count} {category}(s)"
 
@@ -314,6 +319,9 @@ class AttributeComparisonGenerator:
         n_images = task_config.get('n_images', 3)
         use_metadata = task_config.get('use_metadata', True)
 
+        # 使用全局唯一ID生成器
+        id_gen = TaskIDGenerator(task_type='attribute_comparison', dataset='vcr')
+
         attempts = 0
         max_attempts = num_samples * 20
 
@@ -352,7 +360,7 @@ class AttributeComparisonGenerator:
                 })
 
             task = {
-                'task_id': f"ac_vcr_{len(samples)}",
+                'task_id': id_gen.next(),
                 'task_type': 'attribute_comparison',
                 'images': [s['image_path'] for s in selected_samples],
                 'question': question,
@@ -373,6 +381,123 @@ class AttributeComparisonGenerator:
         logger.info(f"Generated {len(samples)} VCR attribute comparison tasks")
         return samples
 
+    @staticmethod
+    def generate_from_visual_genome(source_data: List[Dict],
+                                    num_samples: int,
+                                    task_config: Dict[str, Any],
+                                    templates: Dict[str, Any]) -> List[Dict]:
+        """
+        Generate Attribute Comparison tasks from Visual Genome.
+
+        Visual Genome has rich attribute annotations, we can compare:
+        1. Object attributes (color, size, material)
+        2. Object counts
+        3. Relationship complexity
+        """
+        samples = []
+        n_images = task_config.get('n_images', 3)
+        comparison_types = task_config.get('comparison_types', ['attribute', 'count'])
+
+        # 使用全局唯一ID生成器
+        id_gen = TaskIDGenerator(task_type='attribute_comparison', dataset='visual_genome')
+
+        attempts = 0
+        max_attempts = num_samples * 20
+
+        while len(samples) < num_samples and attempts < max_attempts:
+            attempts += 1
+
+            # Select random samples
+            if len(source_data) < n_images:
+                break
+
+            selected_samples = random.sample(source_data, n_images)
+
+            # Extract objects from Visual Genome format
+            all_objects = []
+            for sample in selected_samples:
+                objects = sample.get('objects', [])
+                # Visual Genome objects have 'name' or 'names' field
+                obj_names = []
+                for obj in objects:
+                    name = obj.get('name') or (obj.get('names', ['unknown'])[0] if obj.get('names') else 'unknown')
+                    obj_names.append(name)
+                all_objects.append(obj_names)
+
+            # Choose comparison type
+            comparison_type = random.choice(comparison_types) if comparison_types else 'count'
+
+            if comparison_type == 'count':
+                # Compare object counts
+                counts = [len(objs) for objs in all_objects]
+
+                if len(set(counts)) < 2:
+                    continue
+
+                max_count = max(counts)
+                answer_idx = counts.index(max_count)
+
+                question = "Which image contains the most objects?"
+                answer = f"Image {answer_idx} with {max_count} objects"
+
+                evidence = []
+                for i, (sample, objs) in enumerate(zip(selected_samples, all_objects)):
+                    evidence.append({
+                        'image_idx': i,
+                        'object_count': len(objs),
+                        'objects': objs[:10]  # Limit for readability
+                    })
+
+            elif comparison_type == 'attribute':
+                # Compare based on common attributes
+                # Look for color attributes in objects
+                color_counts = []
+                for sample in selected_samples:
+                    objects = sample.get('objects', [])
+                    colors = []
+                    for obj in objects:
+                        attrs = obj.get('attributes', [])
+                        for attr in attrs:
+                            if isinstance(attr, str) and attr.lower() in ['red', 'blue', 'green', 'yellow', 'white', 'black', 'brown']:
+                                colors.append(attr.lower())
+                    color_counts.append(len(set(colors)))
+
+                if len(set(color_counts)) < 2:
+                    continue
+
+                max_colors = max(color_counts)
+                answer_idx = color_counts.index(max_colors)
+
+                question = "Which image shows the most variety of colors?"
+                answer = f"Image {answer_idx} with {max_colors} distinct colors"
+
+                evidence = []
+                for i, (sample, count) in enumerate(zip(selected_samples, color_counts)):
+                    evidence.append({
+                        'image_idx': i,
+                        'color_count': count
+                    })
+            else:
+                continue
+
+            samples.append({
+                'task_id': id_gen.next(),
+                'task_type': 'attribute_comparison',
+                'images': [s.get('image_path', s.get('url', '')) for s in selected_samples],
+                'question': question,
+                'answer': answer,
+                'comparison_type': comparison_type,
+                'reasoning_evidence': evidence,
+                'reasoning_depth': 2,
+                'metadata': {
+                    'source_dataset': 'visual_genome',
+                    'source_ids': [s.get('image_id', '') for s in selected_samples]
+                }
+            })
+
+        logger.info(f"Generated {len(samples)} Visual Genome attribute comparison tasks")
+        return samples
+
 
 class EnhancedVNFGenerator:
     """Enhanced Visual Noise Filtering generator."""
@@ -388,6 +513,9 @@ class EnhancedVNFGenerator:
         samples = []
         n_distractors = task_config.get('n_distractors', 3)
         distractor_strategy = task_config.get('distractor_strategy', 'non_overlapping_categories')
+
+        # 使用全局唯一ID生成器
+        id_gen = TaskIDGenerator(task_type='visual_noise_filtering', dataset='mscoco14')
 
         valid_data = [s for s in source_data
                      if len(s['objects']) > 0 and len(s['captions']) > 0]
@@ -426,20 +554,10 @@ class EnhancedVNFGenerator:
             target_idx = all_images.index(target_sample)
 
             # Generate question (multiple templates)
-            question_templates = templates.get('question_templates', [])
-            # Handle different template formats
-            if isinstance(question_templates, dict):
-                question_templates = question_templates.get('object_based', [])
+            question_templates = templates.get('question_templates', {}).get('object_based', [])
             if question_templates:
                 template = random.choice(question_templates)
-                # Try different variable names for compatibility
-                try:
-                    question = template.format(target=target_category)
-                except KeyError:
-                    try:
-                        question = template.format(target_category=target_category)
-                    except KeyError:
-                        question = f"Which image contains a {target_category}?"
+                question = template.format(target=target_category)
             else:
                 question = f"Which image contains a {target_category}?"
 
@@ -465,7 +583,7 @@ class EnhancedVNFGenerator:
             }
 
             samples.append({
-                'task_id': f"vnf_mscoco_{idx}",
+                'task_id': id_gen.next(),
                 'task_type': 'visual_noise_filtering',
                 'images': [img['image_path'] for img in all_images],
                 'question': question,
@@ -548,35 +666,6 @@ class EnhancedVNFGenerator:
         return distractors[:n]
 
     @staticmethod
-    def _vcr_tokens_to_text(tokens: List[str], objects: List[str]) -> str:
-        """Convert VCR tokens to text (fallback implementation)."""
-        # Simple implementation to convert tokens to readable text
-        text = []
-        for token in tokens:
-            # Handle case where token is not a string
-            if not isinstance(token, str):
-                # If token is a list, join it
-                if isinstance(token, list):
-                    text.append(' '.join(str(t) for t in token))
-                else:
-                    text.append(str(token))
-                continue
-                
-            if token.startswith('@'):
-                # Handle object references like @1
-                try:
-                    obj_idx = int(token[1:])
-                    if obj_idx < len(objects):
-                        text.append(objects[obj_idx])
-                    else:
-                        text.append('object')
-                except (ValueError, IndexError):
-                    text.append('object')
-            else:
-                text.append(token)
-        return ' '.join(text)
-
-    @staticmethod
     def generate_from_vcr(source_data: List[Dict],
                          num_samples: int,
                          task_config: Dict[str, Any],
@@ -585,6 +674,9 @@ class EnhancedVNFGenerator:
         samples = []
         n_distractors = task_config.get('n_distractors', 3)
         use_original_qa = task_config.get('use_original_qa', True)
+
+        # 使用全局唯一ID生成器
+        id_gen = TaskIDGenerator(task_type='visual_noise_filtering', dataset='vcr')
 
         # Filter by quality
         quality_filters = task_config.get('quality_filters', {})
@@ -600,23 +692,12 @@ class EnhancedVNFGenerator:
         for idx in range(min(num_samples, len(valid_data) - n_distractors)):
             target_sample = valid_data[idx]
 
-            # Use VCR's natural question or fallback
-            try:
-                # Try original approach first
-                from dataprovider.generator import DataGenerator
-                question_text = DataGenerator._vcr_tokens_to_text(
-                    target_sample['question'],
-                    target_sample['objects']
-                )
-            except ImportError:
-                # Fallback implementation
-                question_text = EnhancedVNFGenerator._vcr_tokens_to_text(
-                    target_sample.get('question', ['Which', 'image', 'shows', 'the', 'correct', 'scene?']),
-                    target_sample['objects']
-                )
-            except (KeyError, TypeError):
-                # Fallback if question or objects not available
-                question_text = "Which image shows the correct scene?"
+            # Use VCR's natural question
+            from dataprovider.generator import DataGenerator
+            question_text = DataGenerator._vcr_tokens_to_text(
+                target_sample['question'],
+                target_sample['objects']
+            )
 
             # Select distractors (different scenes)
             distractors = valid_data[idx+1:idx+1+n_distractors]
@@ -626,17 +707,11 @@ class EnhancedVNFGenerator:
             target_idx = all_images.index(target_sample)
 
             # Get answer
-            try:
-                # Try original approach first
-                from dataprovider.generator import DataGenerator
-                answer_tokens = target_sample['answer_choices'][target_sample['answer_label']]
-                answer_text = DataGenerator._vcr_tokens_to_text(
-                    answer_tokens,
-                    target_sample['objects']
-                )
-            except (ImportError, KeyError, TypeError):
-                # Fallback to simple answer
-                answer_text = "The correct scene"
+            answer_tokens = target_sample['answer_choices'][target_sample['answer_label']]
+            answer_text = DataGenerator._vcr_tokens_to_text(
+                answer_tokens,
+                target_sample['objects']
+            )
 
             evidence = {
                 'target': {
@@ -649,7 +724,7 @@ class EnhancedVNFGenerator:
             }
 
             samples.append({
-                'task_id': f"vnf_vcr_{idx}",
+                'task_id': id_gen.next(),
                 'task_type': 'visual_noise_filtering',
                 'images': [img['image_path'] for img in all_images],
                 'question': question_text,
@@ -666,8 +741,6 @@ class EnhancedVNFGenerator:
             })
 
         return samples
-
-
 class AttributeBridgeReasoningGenerator:
     """Generate Attribute Bridge Reasoning tasks from MSCOCO14.
     
@@ -1010,7 +1083,7 @@ class RelationComparisonGenerator:
                      key=lambda i: complexity_info[i]['interaction_potential'])
         
         question = "Which image shows a scene with the most potential for character interactions?"
-        answer = f"Image {max_idx} with {complexity_info[max_idx]['person_count']} characters ({complexity_info[max_idx]['interaction_potential']} potential interactions)"
+        answer = f"Image {max_idx}"
         
         evidence = []
         for i, info in enumerate(complexity_info):
@@ -1059,7 +1132,7 @@ class RelationComparisonGenerator:
                      key=lambda i: crowdedness_info[i]['total_objects'])
         
         question = "Which image shows the most crowded scene with the most objects?"
-        answer = f"Image {max_idx} with {crowdedness_info[max_idx]['total_objects']} objects"
+        answer = f"Image {max_idx}"
         
         evidence = []
         for i, info in enumerate(crowdedness_info):
@@ -1109,7 +1182,7 @@ class RelationComparisonGenerator:
                      key=lambda i: diversity_info[i]['unique_count'])
         
         question = "Which image shows the greatest variety of different object types?"
-        answer = f"Image {max_idx} with {diversity_info[max_idx]['unique_count']} different types: {', '.join(diversity_info[max_idx]['unique_types'][:5])}"
+        answer = f"Image {max_idx}"
         
         evidence = []
         for i, info in enumerate(diversity_info):
@@ -1262,7 +1335,7 @@ class RelationComparisonGenerator:
                      key=lambda i: complexity_info[i]['complexity'])
         
         question = f"Which image shows the {category} in the most complex scene with other objects?"
-        answer = f"Image {max_idx} with {complexity_info[max_idx]['complexity']} potential relationships"
+        answer = f"Image {max_idx}"
         
         evidence = []
         for i, info in enumerate(complexity_info):
@@ -1452,7 +1525,7 @@ class QADatasetGenerators:
             max_idx = question_lengths.index(max(question_lengths))
             
             question = "Compare these documents. Which one contains the most complex information requiring deeper analysis?"
-            answer = f"Image {max_idx} with question length {question_lengths[max_idx]}"
+            answer = f"Image {max_idx}"
             
             evidence = []
             for i, s in enumerate(selected):
@@ -1517,7 +1590,7 @@ class QADatasetGenerators:
             max_idx = question_lengths.index(max(question_lengths)) if max(question_lengths) > 0 else 0
             
             question = "Compare these real-world scenarios. Which image presents the most complex situation requiring the longest description?"
-            answer = f"Image {max_idx} with question length {question_lengths[max_idx]}"
+            answer = f"Image {max_idx}"
             
             evidence = []
             for i, s in enumerate(selected):
@@ -1797,7 +1870,7 @@ class QADatasetGenerators:
             max_idx = complexities.index(max(complexities)) if complexities else 0
             
             question = f"Compare the content across these {n_images} images. Which one has the most detailed answer?"
-            answer = f"Image {max_idx} with answer length {complexities[max_idx]}"
+            answer = f"Image {max_idx}"
             
             evidence = []
             for i, s in enumerate(selected):
@@ -2075,4 +2148,3 @@ class QADatasetGenerators:
             })
             
         logger.info(f"Generated {len(samples)} AC tasks from ScienceQA ({attempts} attempts)")
-        return samples

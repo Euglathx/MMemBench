@@ -37,6 +37,8 @@ from .context_padder import ContextPadder
 from .length_selector import DynamicLengthSelector, LengthSelectionStrategy, create_length_selector
 # 窗口2新增: 推理链构建器
 from .reasoning_chain_builder import ReasoningChainBuilder, ChainQuery, ChainExecutionManager
+# === Phase 2 Task 2.5: Image policy imports ===
+from .image_policy import ImageInjectionPolicy, ImagePolicyManager
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +54,52 @@ class PhaseState:
 
 
 @dataclass
+class TurnGroundTruth:
+    """Ground truth for a single turn
+
+    Used to store evaluation criteria for a specific turn, independent of task-level expected answer.
+    This enables phase-aware evaluation where intermediate turns are judged on their sub-goals
+    rather than the final answer.
+    """
+    turn_id: int
+    phase: str  # e.g., "entity_grounding", "chain_navigation"
+    action_type: str  # e.g., "guidance", "follow_up"
+
+    # What this turn is testing
+    sub_goal: str  # e.g., "identify_entity", "find_spatial_neighbor", "final_answer"
+
+    # Expected answer for THIS turn (not task-level!)
+    expected_answer: str
+
+    # Acceptable alternative answers
+    acceptable_variations: List[str] = field(default_factory=list)
+
+    # Images that should be visible at this turn
+    required_images: List[int] = field(default_factory=list)
+
+    # Key facts model should have learned by now
+    ground_truth_facts: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Optional: turn-specific evaluation hints
+    evaluation_hints: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class TaskState:
     """Complete state of current task execution"""
     task_id: str
     task_type: str
     question: str
-    expected_answer: str
+    expected_answer: str  # Keep for final answer reference
     images: List[str]
 
     # Phase tracking
     current_phase: PhaseState = None
     phases_completed: List[str] = field(default_factory=list)
+
+    # === NEW: Turn-level ground truths (Task 2.2) ===
+    turn_ground_truths: Dict[int, TurnGroundTruth] = field(default_factory=dict)
+    current_turn_ground_truth: Optional[TurnGroundTruth] = None
 
     # Difficulty tracking
     difficulty_level: int = 1
@@ -99,7 +136,12 @@ class StrategicSimulator:
         length_selection_strategy: str = "adaptive",  # "fixed", "random", "phase_based", "difficulty_based", "adaptive"
         # === Task 1B: 文本提示最小化参数 ===
         minimize_text_hints: bool = True,
-        hint_level: str = "minimal"  # "minimal" | "moderate" | "full"
+        hint_level: str = "minimal",  # "minimal" | "moderate" | "full"
+        # === Phase 2 Task 2.4: Truth validation parameters ===
+        filter_incorrect_turns: bool = True,  # Filter incorrect turns from conversation history
+        error_filter_threshold: float = 0.5,  # Score threshold for filtering
+        # === Phase 2 Task 2.5: Image policy parameter ===
+        image_injection_policy: ImageInjectionPolicy = ImageInjectionPolicy.SEND_ALL_EVERY_TURN
     ):
         """
         Initialize strategic simulator.
@@ -120,6 +162,9 @@ class StrategicSimulator:
                 - "minimal": Only image IDs (e.g., "Image 1")
                 - "moderate": Brief mentions (e.g., "the first image")
                 - "full": Detailed descriptions (for text-only model testing)
+            filter_incorrect_turns: If True, exclude incorrect turns from conversation history (Task 2.4)
+            error_filter_threshold: Minimum score threshold for including turns in history (Task 2.4)
+            image_injection_policy: Image injection strategy (Task 2.5)
         """
         self.llm_client = llm_client or LLMClient()
         self.evaluator = evaluator or Evaluator(mode=EvaluationMode.STRESS_TEST)
@@ -158,6 +203,14 @@ class StrategicSimulator:
         self.minimize_text_hints = minimize_text_hints
         self.hint_level = hint_level
 
+        # === Phase 2 Task 2.4: Truth validation configuration ===
+        self.filter_incorrect_turns = filter_incorrect_turns
+        self.error_filter_threshold = error_filter_threshold
+
+        # === Phase 2 Task 2.5: Image policy configuration ===
+        self.image_policy = ImagePolicyManager(image_injection_policy)
+        self._global_image_offset: int = 0
+
         self.memory = MemoryStore()
         self.task_state: Optional[TaskState] = None
         self.turn_count: int = 0
@@ -168,6 +221,10 @@ class StrategicSimulator:
 
         # Task 1D: Store conversation history for batch integration
         self.conversation_history: List[Dict[str, Any]] = []
+
+        # Window B: Turn-level image exposure contract state
+        self._resolved_task_images: List[str] = []
+        self._image_exposure_store: Dict[str, Dict[str, Any]] = {}
 
     def _get_strategy(self, task_type: str):
         """Get testing strategy for task type"""
@@ -273,9 +330,13 @@ class StrategicSimulator:
         )
 
         self.turn_count = 0
-        self.evaluator.reset_for_task()
-
-        # Initialize memory
+        self.evaluator.reset_for_task(
+            task_type=task_type,
+            num_images=len(self.task_state.images)
+        )
+        self.image_policy.reset()
+        self._resolved_task_images = []
+        self._image_exposure_store = {}
         self.memory.start_task(task_id, task_type, self.task_state.expected_answer)
 
         # Extract ground truths from task
@@ -470,6 +531,151 @@ class StrategicSimulator:
             "core_fact_question": "the main answer we established"
         }
 
+    def _generate_turn_ground_truth(
+        self,
+        phase_name: str,
+        action: str,
+        turn_num: int
+    ) -> TurnGroundTruth:
+        """Generate expected answer for this specific turn (Task 2.2)
+
+        根据 phase 和任务类型生成 turn-specific ground truth。
+        这使得评估器可以根据当前 turn 的子目标进行评估，而不是总是使用 task-level expected answer。
+
+        Args:
+            phase_name: Current phase name (e.g., "entity_grounding", "chain_navigation")
+            action: Action type for this turn
+            turn_num: Turn number
+
+        Returns:
+            TurnGroundTruth object with turn-specific expected answer and evaluation hints
+        """
+        if not self.task_state:
+            # Fallback: use task-level expected answer
+            return TurnGroundTruth(
+                turn_id=turn_num,
+                phase=phase_name,
+                action_type=action,
+                sub_goal="general",
+                expected_answer=self.task_state.expected_answer if self.task_state else "",
+                evaluation_hints={}
+            )
+
+        strategy = self._get_strategy(self.task_state.task_type)
+
+        # Phase-specific ground truth generation
+        if phase_name == "entity_grounding":
+            # Expected: Model identifies the target entity
+            entity = self._extract_target_entity(self.task_state.question)
+            return TurnGroundTruth(
+                turn_id=turn_num,
+                phase=phase_name,
+                action_type=action,
+                sub_goal="identify_entity",
+                expected_answer=f"Model should identify/describe the {entity}",
+                acceptable_variations=[
+                    f"The {entity} is visible",
+                    f"I can see the {entity}",
+                    f"Located the {entity}",
+                    f"The {entity} is present"
+                ],
+                evaluation_hints={
+                    "focus_on": "entity_identification",
+                    "ignore_final_answer": True,
+                    "check_entity_description": True
+                }
+            )
+
+        elif phase_name == "chain_navigation":
+            # Expected: Model finds intermediate object (not final answer)
+            return TurnGroundTruth(
+                turn_id=turn_num,
+                phase=phase_name,
+                action_type=action,
+                sub_goal="spatial_relation",
+                expected_answer="Model should identify the intermediate object based on spatial relation",
+                acceptable_variations=[
+                    "The object in the specified direction",
+                    "The intermediate object",
+                    "The object matching the spatial relation"
+                ],
+                evaluation_hints={
+                    "focus_on": "spatial_reasoning",
+                    "ignore_final_answer": True,
+                    "check_spatial_relation": True
+                }
+            )
+
+        elif phase_name == "grounding":
+            # Expected: Model establishes baseline understanding
+            return TurnGroundTruth(
+                turn_id=turn_num,
+                phase=phase_name,
+                action_type=action,
+                sub_goal="baseline_understanding",
+                expected_answer="Model should demonstrate basic visual understanding",
+                acceptable_variations=[
+                    "Basic scene description",
+                    "Object identification",
+                    "Spatial layout understanding"
+                ],
+                evaluation_hints={
+                    "focus_on": "visual_grounding",
+                    "check_basic_comprehension": True
+                }
+            )
+
+        elif phase_name in ["final_answer", "final_evaluation", "chain_verification"]:
+            # Expected: Use task-level expected answer
+            return TurnGroundTruth(
+                turn_id=turn_num,
+                phase=phase_name,
+                action_type=action,
+                sub_goal="final_answer",
+                expected_answer=self.task_state.expected_answer,
+                evaluation_hints={
+                    "is_final_answer": True,
+                    "require_complete_answer": True
+                }
+            )
+
+        else:
+            # Default: For other phases, use task-level expected answer
+            return TurnGroundTruth(
+                turn_id=turn_num,
+                phase=phase_name,
+                action_type=action,
+                sub_goal="general",
+                expected_answer=self.task_state.expected_answer,
+                evaluation_hints={}
+            )
+
+    def _extract_target_entity(self, question: str) -> str:
+        """Extract target entity from task question
+
+        Args:
+            question: Task question string
+
+        Returns:
+            Entity name (e.g., "person", "object", "人", "物体")
+        """
+        question_lower = question.lower()
+
+        # Common entity keywords
+        entities = [
+            ("person", ["person", "people", "man", "woman", "人"]),
+            ("object", ["object", "thing", "item", "物体", "东西"]),
+            ("animal", ["animal", "dog", "cat", "bird", "动物"]),
+            ("vehicle", ["car", "bike", "bicycle", "vehicle", "车"]),
+            ("food", ["food", "cake", "fruit", "食物"])
+        ]
+
+        for entity_name, keywords in entities:
+            if any(keyword in question_lower for keyword in keywords):
+                return entity_name
+
+        return "target"
+
     def _build_message(self, action: str, params: Dict[str, Any]) -> str:
         """Build natural language message from action and params"""
         action_def = ACTION_DEFINITIONS.get(action)
@@ -489,6 +695,243 @@ class StrategicSimulator:
                 message = message.replace(f"{{{key}}}", str(value))
 
         return message
+
+    def _image_ref_sort_key(self, image_ref: str) -> int:
+        match = re.search(r"(\d+)$", image_ref)
+        return int(match.group(1)) if match else 10**9
+
+    def _get_image_ref_for_resolved_path(self, image_path: str) -> str:
+        try:
+            idx = self._resolved_task_images.index(image_path)
+        except ValueError:
+            return image_path
+        return f"Image {self._global_image_offset + idx}"
+
+    def _infer_expected_source(
+        self,
+        turn_ground_truth: Optional[TurnGroundTruth],
+        visible_image_refs: List[str],
+        memory_image_refs: List[str]
+    ) -> str:
+        hints = turn_ground_truth.evaluation_hints if turn_ground_truth else {}
+        if hints.get("fresh_visual_required"):
+            return "fresh_visual"
+        if hints.get("memory_only"):
+            return "memory"
+        if visible_image_refs and memory_image_refs:
+            return "either"
+        if visible_image_refs:
+            return "fresh_visual"
+        if memory_image_refs:
+            return "memory"
+        return "either"
+
+    def _update_image_exposure_store(self, visible_paths: List[str]):
+        for image_path in visible_paths:
+            image_ref = self._get_image_ref_for_resolved_path(image_path)
+            existing = self._image_exposure_store.get(image_ref)
+            if existing is None:
+                self._image_exposure_store[image_ref] = {
+                    "path": image_path,
+                    "first_exposed_turn": self.turn_count,
+                    "last_visible_turn": self.turn_count,
+                }
+            else:
+                existing["last_visible_turn"] = self.turn_count
+                existing["path"] = image_path
+
+    def _build_turn_evaluation_context(
+        self,
+        images_to_send: List[str],
+        turn_ground_truth: Optional[TurnGroundTruth],
+        action: str
+    ) -> Dict[str, Any]:
+        visible_paths = list(images_to_send or [])
+        visible_image_refs = [self._get_image_ref_for_resolved_path(path) for path in visible_paths]
+        memory_image_refs = sorted(
+            self._image_exposure_store.keys(),
+            key=self._image_ref_sort_key,
+        )
+        all_exposed_image_refs = list(memory_image_refs)
+        for image_ref in visible_image_refs:
+            if image_ref not in all_exposed_image_refs:
+                all_exposed_image_refs.append(image_ref)
+
+        if visible_image_refs and memory_image_refs:
+            turn_input_mode = "mixed"
+        elif visible_image_refs:
+            turn_input_mode = "fresh_visual"
+        elif memory_image_refs:
+            turn_input_mode = "memory_only"
+        else:
+            turn_input_mode = "text_only"
+
+        expected_source = self._infer_expected_source(
+            turn_ground_truth,
+            visible_image_refs,
+            memory_image_refs,
+        )
+        hints = turn_ground_truth.evaluation_hints if turn_ground_truth else {}
+        target_variables = list(hints.get("target_variables", []))
+        if turn_ground_truth and turn_ground_truth.required_images:
+            target_variables.extend(
+                [f"image_ref:{self._global_image_offset + idx}" for idx in turn_ground_truth.required_images]
+            )
+
+        evaluator_memory_image_paths = []
+        for image_ref in memory_image_refs:
+            image_path = self._image_exposure_store.get(image_ref, {}).get("path")
+            if image_path and image_path not in evaluator_memory_image_paths:
+                evaluator_memory_image_paths.append(image_path)
+
+        turn_context = {
+            "turn_input_mode": turn_input_mode,
+            "visible_image_refs": visible_image_refs,
+            "memory_image_refs": memory_image_refs,
+            "intended_image_refs": list(visible_image_refs),
+            "all_exposed_image_refs": all_exposed_image_refs,
+            "new_images_sent_count": len(visible_image_refs),
+            "images_sent_count_legacy": len(visible_image_refs),
+            "image_policy": self.image_policy.policy.value,
+            "fresh_visual_required": expected_source == "fresh_visual",
+            "current_question_scope": {
+                "expected_source": expected_source,
+                "target_variables": target_variables,
+            },
+            "target_variables": target_variables,
+            "evaluator_visible_image_paths": visible_paths,
+            "evaluator_memory_image_paths": evaluator_memory_image_paths,
+        }
+
+        self._update_image_exposure_store(visible_paths)
+        return turn_context
+
+    @staticmethod
+    def _build_legacy_unverified_delivery(
+        reason: str,
+        intended_image_refs: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        intended_refs = list(intended_image_refs or [])
+        return {
+            "intended_image_refs": intended_refs,
+            "payload_image_count": len(intended_refs),
+            "system_receipt_status": "not_available",
+            "receipt_image_count": None,
+            "evidence_source": "legacy_or_missing_metadata",
+            "status": "unverified",
+            "status_reason": reason,
+        }
+
+    def _classify_image_delivery(
+        self,
+        turn_protocol: Dict[str, Any],
+        target_response: Dict[str, Any],
+        model_content: str,
+    ) -> Tuple[Dict[str, Any], str]:
+        intended_image_refs = list(turn_protocol.get("intended_image_refs") or [])
+        visible_image_refs = list(turn_protocol.get("visible_image_refs") or [])
+        turn_input_mode = turn_protocol.get("turn_input_mode", "text_only")
+        expected_source = ((turn_protocol.get("current_question_scope") or {}).get("expected_source", "either"))
+
+        request_image_count = target_response.get("request_image_count")
+        status_code = target_response.get("status_code")
+        receipt_metadata = target_response.get("receipt_metadata")
+        response_metadata = target_response.get("response_metadata") or {}
+
+        image_delivery = {
+            "intended_image_refs": intended_image_refs,
+            "payload_image_count": request_image_count if isinstance(request_image_count, int) else len(visible_image_refs),
+            "system_receipt_status": "not_available",
+            "receipt_image_count": None,
+            "evidence_source": "legacy_or_missing_metadata",
+            "status": "unverified",
+            "status_reason": "missing_delivery_metadata",
+        }
+
+        if not intended_image_refs and turn_input_mode in {"memory_only", "text_only"} and expected_source != "fresh_visual":
+            image_delivery.update({
+                "system_receipt_status": "not_applicable",
+                "evidence_source": "request_payload",
+                "status": "not_applicable",
+                "status_reason": "no_fresh_image_delivery_expected",
+            })
+            return image_delivery, "valid"
+
+        if receipt_metadata is not None:
+            image_delivery["system_receipt_status"] = "confirmed"
+            image_delivery["evidence_source"] = "system_receipt"
+            if isinstance(receipt_metadata, dict):
+                receipt_count = receipt_metadata.get("image_count")
+                if isinstance(receipt_count, int):
+                    image_delivery["receipt_image_count"] = receipt_count
+                receipt_status = str(receipt_metadata.get("status", "")).lower()
+                if receipt_status in {"failed", "error", "missing"}:
+                    image_delivery.update({
+                        "system_receipt_status": "failed",
+                        "status": "confirmed_failed",
+                        "status_reason": f"receipt_reported_{receipt_status}",
+                    })
+                    return image_delivery, "invalid_due_to_delivery"
+                if image_delivery["receipt_image_count"] is not None and image_delivery["receipt_image_count"] != len(intended_image_refs):
+                    image_delivery.update({
+                        "status": "confirmed_failed",
+                        "status_reason": "receipt_image_count_mismatch",
+                    })
+                    return image_delivery, "invalid_due_to_delivery"
+
+        payload_count = image_delivery["payload_image_count"]
+        if intended_image_refs:
+            image_delivery["evidence_source"] = "request_payload"
+            if payload_count != len(visible_image_refs):
+                image_delivery.update({
+                    "status": "confirmed_failed",
+                    "status_reason": "payload_count_visible_refs_mismatch",
+                })
+                return image_delivery, "invalid_due_to_delivery"
+            if payload_count != len(intended_image_refs) or visible_image_refs != intended_image_refs:
+                image_delivery.update({
+                    "status": "confirmed_failed",
+                    "status_reason": "payload_missing_intended_images",
+                })
+                return image_delivery, "invalid_due_to_delivery"
+            if target_response.get("success"):
+                image_delivery.update({
+                    "status": "confirmed",
+                    "status_reason": "payload_matches_intent",
+                })
+                return image_delivery, "valid"
+
+        heuristic_refusal_markers = [
+            "can't see the image", "cannot see the image", "can't view the image", "cannot view the image",
+            "can't access the image", "cannot access the image", "unable to see the image",
+            "i can't see", "i cannot see", "看不到图片", "无法查看图片", "无法看到图片"
+        ]
+        response_lower = (model_content or "").lower()
+        if intended_image_refs and any(marker in response_lower for marker in heuristic_refusal_markers):
+            image_delivery.update({
+                "evidence_source": "behavior_heuristic",
+                "status": "suspected_failed",
+                "status_reason": "heuristic_visual_refusal_on_expected_visual_turn",
+            })
+            return image_delivery, "excluded_unverified_delivery"
+
+        if intended_image_refs and isinstance(status_code, int) and status_code >= 400:
+            image_delivery.update({
+                "evidence_source": "request_payload",
+                "status": "confirmed_failed",
+                "status_reason": f"target_model_http_{status_code}",
+            })
+            return image_delivery, "invalid_due_to_delivery"
+
+        if intended_image_refs and response_metadata.get("attempted_image_count") is not None and not target_response.get("success"):
+            image_delivery.update({
+                "evidence_source": "request_payload",
+                "status": "unverified",
+                "status_reason": "request_failed_without_confirmed_delivery_receipt",
+            })
+            return image_delivery, "excluded_unverified_delivery"
+
+        return image_delivery, "excluded_unverified_delivery"
 
     def _call_core_model_for_action(self) -> Tuple[str, str, Dict[str, Any]]:
         """
@@ -557,6 +1000,30 @@ class StrategicSimulator:
                 message = parsed.get("message", self._build_message(action, {}))
                 return action, message, parsed
 
+    def _get_phase_message_instruction(self, phase_name: str) -> str:
+        """Return phase-specific instruction for core model message generation"""
+        question = self.task_state.question if self.task_state else ''
+        instructions = {
+            "grounding": "引导模型观察图片中的具体对象或区域，建立视觉基础。",
+            "entity_grounding": "让模型识别并描述图片中的关键实体（人、物体、场景元素）。",
+            "target_presentation": "让模型描述目标图片的整体内容和关键细节。",
+            "image_observation": "让模型仔细观察图片并描述看到的内容。",
+            "chain_navigation": "引导模型进行下一步推理，追问对象之间的关系或属性。",
+            "relationship_probing": "追问图片中对象之间的空间关系、大小比较或属性差异。",
+            "option_presentation": "让模型评估给定的选项，判断哪个与图片内容匹配。",
+            "noise_injection": "注入干扰信息来测试模型的鲁棒性，但要自然地融入对话。",
+            "memory_attack": "尝试覆盖模型之前建立的视觉记忆，测试记忆稳定性。",
+            "distractor_injection": "引入无关或误导性的选项/信息来测试模型的抗干扰能力。",
+            "chain_verification": "验证模型的推理链是否正确，追问中间步骤的依据。",
+            "stress_test": "用微妙的误导信息测试模型，看它是否能��持正确答案。",
+            "noise_during_reasoning": "在模型推理过程中注入噪声，测试推理的稳定性。",
+            "final_evaluation": f"直接询问核心问题：{question}",
+            "final_test": f"直接询问核心问题：{question}",
+            "final_answer": f"直接询问核心问题：{question}",
+            "final_selection": f"直接询问核心问题：{question}",
+        }
+        return instructions.get(phase_name, "生成一条与任务图片内容直接相关的具体问题。")
+
     def _build_core_system_prompt(self, allowed_actions: List[str]) -> str:
         """Build system prompt for core model"""
         action_descriptions = []
@@ -567,32 +1034,54 @@ class StrategicSimulator:
                     f"- {action_name}: {action_def.purpose}"
                 )
 
-        return f"""你是一个VLM能力测试的考官。你的任务是通过策略性的多轮对话来测试目标模型的能力极限。
+        phase_name = self.task_state.current_phase.phase_name if self.task_state else 'unknown'
+        phase_instruction = self._get_phase_message_instruction(phase_name)
+
+        return f"""你是一个VLM能力测试的考官。你生成的message字段将直接作为【用户消息】发送给一个视觉��言模型（VLM），该模型已经收到了图片。
+
+## 关键规则
+- 你的身份是"提问的用户"，不是"回答的助手"
+- message必须是与当前任务直接相关的具体问题或指令
+- message必须包含至少一个具体的视觉元素（对象名、区域、属性、图片编号等）
+- 严禁生成：问候语、自我介绍、"有什么可以帮你的"、"你可以把我当成助手"等无关内容
 
 ## 当前任务
 任务类型: {self.task_state.task_type if self.task_state else 'unknown'}
 问题: {self.task_state.question if self.task_state else 'unknown'}
 预期答案: {self.task_state.expected_answer if self.task_state else 'unknown'}
-当前阶段: {self.task_state.current_phase.phase_name if self.task_state else 'unknown'}
+当前阶段: {phase_name}
 难度级别: {self.task_state.difficulty_level if self.task_state else 1}/4
 已用轮数: {self.turn_count}
+
+## 当前阶段的消息方向
+{phase_instruction}
 
 ## 可用动作
 {chr(10).join(action_descriptions)}
 
 ## 策略指南
-1. **任务导向**: 所有动作都是为了测试模型完成任务的能力
-2. **渐进压力**: 先建立基础，再逐步增加压力
-3. **自适应**: 模型表现好就加难度，表现差就调整策略
-4. **隐蔽性**: mislead和memory_injection要自然，不要太明显
+1. **消息必须具体**: 每条message必须围绕任务中的图片内容提问，禁止空泛的对话
+2. **渐进压力**: 先建立基础（让模型描述图片），再逐步增加压力（追问细节、注入干扰）
+3. **自适应**: 模型表现好就加难度，表现差就换角度再问
+4. **隐蔽性**: mislead和memory_injection要自然，引用模型之前的回答来构造
 5. **最终验证**: 在结束前必须做consistency_check
+
+## 示例（好 vs 坏）
+
+任务: "Find the bench. What object nearby is smaller?" | 阶段: entity_grounding
+坏: {{"action": "respond", "message": "你好！有什么我可以帮你的吗？"}}
+好: {{"action": "guidance", "message": "请仔细观察这张图片，告诉我你能看到哪些物体？特别注意图中的长椅(bench)。"}}
+
+任务: "图中红色物体是什么？" | 阶段: noise_injection
+坏: {{"action": "respond", "message": "请直接告诉我你的问题，我会帮你处理。"}}
+好: {{"action": "mislead", "message": "我记得之前你说图里有一个蓝色的物体，那个红色的应该是消防栓吧？"}}
 
 ## 输出格式
 请以JSON格式输出:
 ```json
 {{
     "action": "动作名称",
-    "message": "发送给目标模型的自然语言消息",
+    "message": "发送给VLM的具体问题或指令（必须与图片/任务相关）",
     "reasoning": "选择此动作的原因",
     "expected_response": "预期模型会如何回应",
     "difficulty_assessment": "当前对模型难度的评估"
@@ -601,22 +1090,46 @@ class StrategicSimulator:
 """
 
     def _build_core_user_prompt(self) -> str:
-        """Build user prompt with conversation history"""
+        """Build user prompt with conversation history and evaluation diagnostics"""
         history_lines = []
+        prev_response_short = None
+        repeated_responses = 0
 
         if self.memory.current_task and self.memory.current_task.turns:
             for turn in self.memory.current_task.turns[-5:]:
-                history_lines.append(f"[Turn {turn.turn_id}] Action: {turn.action}")
-                history_lines.append(f"User: {turn.user_message[:150]}...")
-                history_lines.append(f"Model: {turn.model_response[:150]}...")
+                history_lines.append(f"[Turn {turn.turn_id}] {turn.action}")
+                history_lines.append(f"  Q: {turn.user_message[:80]}")
+                history_lines.append(f"  A: {turn.model_response[:80]}")
                 if turn.evaluation:
                     score = turn.evaluation.get("score", "N/A")
-                    history_lines.append(f"Eval Score: {score}")
+                    wrong = turn.evaluation.get("wrong_elements", [])
+                    diag = wrong[0][:60] if wrong else ""
+                    history_lines.append(f"  Score: {score}" + (f" | Issue: {diag}" if diag else ""))
                 history_lines.append("")
 
-        history = "\n".join(history_lines) if history_lines else "This is the first turn."
+                # Detect repeated responses
+                resp_short = turn.model_response[:50].strip().lower()
+                if prev_response_short and resp_short == prev_response_short:
+                    repeated_responses += 1
+                prev_response_short = resp_short
 
-        return f"""## 对话历史
+        history = "\n".join(history_lines) if history_lines else "这是第一轮。模型已经收到了图片，请直接提出与图片相关的问题。"
+
+        question = self.task_state.question if self.task_state else ''
+        expected = self.task_state.expected_answer if self.task_state else ''
+        phase_name = self.task_state.current_phase.phase_name if self.task_state else 'unknown'
+        phase_instruction = self._get_phase_message_instruction(phase_name)
+
+        # Warn if model is stuck in a loop
+        repeat_warning = ""
+        if repeated_responses >= 1:
+            repeat_warning = f"\n⚠️ 模型已连续{repeated_responses + 1}次给出相同回答。你必须换一个完全不同的提问角度。"
+
+        return f"""## 提醒
+你是用户，正在向VLM提问。任务: "{question}" | 预期答案: "{expected}"
+每一轮提问必须有递进，禁止重复之前问过的问题。{repeat_warning}
+
+## 对话历史
 {history}
 
 ## 当前状态
@@ -624,7 +1137,7 @@ class StrategicSimulator:
 - 最近分数: {self.task_state.recent_scores[-3:] if self.task_state else []}
 - 已用动作: {self.task_state.actions_used[-5:] if self.task_state else []}
 
-请选择下一个动作并生成消息。"""
+请选择下一个动作，并生成一条{phase_instruction}"""
 
     def _parse_core_response(self, content: str, reasoning_content: str = "") -> Dict[str, Any]:
         """
@@ -757,9 +1270,19 @@ class StrategicSimulator:
 
         self.task_state.actions_used.append(action)
 
+        # === NEW (Task 2.2): Generate turn-level ground truth ===
+        turn_ground_truth = self._generate_turn_ground_truth(
+            phase_name=phase.phase_name,
+            action=action,
+            turn_num=self.turn_count
+        )
+        self.task_state.turn_ground_truths[self.turn_count] = turn_ground_truth
+        self.task_state.current_turn_ground_truth = turn_ground_truth
+
         if self.verbose:
             print(f"Action: {action}")
             print(f"Message: {message[:100]}...")
+            print(f"Turn Goal: {turn_ground_truth.sub_goal}")
 
         # 2. Track misleading attempts
         if action in ["mislead", "mislead_subtle", "memory_injection"]:
@@ -776,6 +1299,22 @@ class StrategicSimulator:
 
         # 3. Determine images to send
         images_to_send = self._get_images_for_turn(action)
+        turn_protocol = self._build_turn_evaluation_context(
+            images_to_send=images_to_send,
+            turn_ground_truth=turn_ground_truth,
+            action=action
+        )
+
+        # === Phase 2 Task 2.1: Validation for images_sent ===
+        # Warn if images were expected but couldn't be resolved
+        if self.task_state.images and not images_to_send:
+            warning_msg = (
+                f"[WARNING] Task {self.task_state.task_id} expects {len(self.task_state.images)} images "
+                f"but none were resolved. The model will not receive visual input!"
+            )
+            logger.warning(warning_msg)
+            if self.verbose:
+                print(f"\n{warning_msg}\n")
 
         # Task 1B: Sanitize message to minimize text hints
         original_message = message
@@ -788,8 +1327,11 @@ class StrategicSimulator:
         if self.verbose and original_message != message:
             print(f"[Sanitized] Original length: {len(original_message)}, New length: {len(message)}")
 
-        # 4. Build conversation for target model
-        target_messages = self.memory.get_conversation_history()
+        # 4. Build conversation for target model - with optional filtering (Task 2.4)
+        target_messages = self.memory.get_conversation_history(
+            filter_incorrect=self.filter_incorrect_turns,
+            score_threshold=self.error_filter_threshold
+        )
         target_messages.append({"role": "user", "content": message})
 
         # 5. Call target model
@@ -804,6 +1346,28 @@ class StrategicSimulator:
         else:
             model_content = target_response.get("content", "")
 
+        image_delivery, evaluation_validity = self._classify_image_delivery(
+            turn_protocol=turn_protocol,
+            target_response=target_response,
+            model_content=model_content,
+        )
+        eval_context = {
+            "previous_responses": [c["claim"] for c in self.task_state.model_claims[-5:]],
+            "phase": phase.phase_name,
+            # === NEW (Task 2.2): Turn-level context ===
+            "sub_goal": turn_ground_truth.sub_goal,
+            "turn_ground_truth": turn_ground_truth,
+            "evaluation_hints": turn_ground_truth.evaluation_hints,
+            "task_expected_answer": self.task_state.expected_answer,  # Keep task-level for reference
+            # === Phase 2 Task 2.5: Pass images_sent to evaluator ===
+            "images_sent": images_to_send,
+            "total_task_images": len(self.task_state.images) if self.task_state.images else 0,
+            "image_delivery": image_delivery,
+            "image_delivery_status": image_delivery.get("status", "unknown"),
+            "evaluation_validity": evaluation_validity,
+            **turn_protocol,
+        }
+
         if self.verbose:
             print(f"Model: {model_content[:150]}...")
 
@@ -814,30 +1378,51 @@ class StrategicSimulator:
             "action_context": action
         })
 
-        # 7. Evaluate response
+        # 7. Evaluate response - using turn-level expected answer (Task 2.2)
         eval_result = self.evaluator.evaluate_response(
             response=model_content,
-            expected_answer=self.task_state.expected_answer,
+            expected_answer=turn_ground_truth.expected_answer,  # Use turn-level expected!
             action_type=action,
             question_asked=message,
-            context={
-                "previous_responses": [c["claim"] for c in self.task_state.model_claims[-5:]],
-                "phase": phase.phase_name
-            }
+            context=eval_context
         )
+
+        # === Phase 2 Task 2.4: Validate model claims ===
+        claim_validation = self._validate_model_claims(
+            response=model_content,
+            turn_number=self.turn_count,
+            evaluation=eval_result
+        )
+
+        is_response_correct = not claim_validation["has_false_claims"]
+
+        if self.verbose and claim_validation["has_false_claims"]:
+            print(f"[Claim Validation] ⚠️  {claim_validation['false_claim_count']} false claims detected")
+            print(f"[Claim Validation] {claim_validation['validation_summary']}")
+
+        # Update the last model_claims entry with validation info
+        self.task_state.model_claims[-1].update({
+            "is_correct": is_response_correct,
+            "validation": claim_validation,
+            "evaluation_score": eval_result.score,
+            "evaluation_validity": eval_result.evaluation_validity,
+            "image_delivery_status": eval_result.image_delivery_status,
+        })
 
         self.task_state.recent_scores.append(eval_result.score)
 
         if self.verbose:
             print(f"Score: {eval_result.score:.2f} | Passed: {eval_result.level_passed}")
 
-        # 8. Store in memory
+        # 8. Store in memory - with validation info (Task 2.4)
         self.memory.add_turn(
             action=action,
             user_message=message,
             model_response=model_content,
             evaluation=eval_result.to_dict(),
-            key_info=[f"Turn {self.turn_count}: {action}"]
+            key_info=[f"Turn {self.turn_count}: {action}"],
+            is_correct=is_response_correct,
+            claim_validation=claim_validation
         )
 
         # 9. Log
@@ -849,7 +1434,10 @@ class StrategicSimulator:
             "message": message,
             "response": model_content,
             "evaluation": eval_result.to_dict(),
-            "images_sent": images_to_send
+            "images_sent": images_to_send,
+            "image_delivery": image_delivery,
+            "evaluation_validity": evaluation_validity,
+            **turn_protocol,
         })
 
         # Task 1D: Record turn details in conversation history
@@ -861,9 +1449,12 @@ class StrategicSimulator:
             'response': model_content,
             'images_sent': images_to_send if images_to_send else [],
             'evaluation': eval_result.to_dict(),
+            'image_delivery': image_delivery,
+            'evaluation_validity': evaluation_validity,
             'timestamp': datetime.now().isoformat(),
             'phase': phase.phase_name,
-            'difficulty': self.task_state.difficulty_level
+            'difficulty': self.task_state.difficulty_level,
+            **turn_protocol,
         })
 
         # 10. Check for difficulty increase
@@ -882,9 +1473,13 @@ class StrategicSimulator:
             "message": message,
             "response": model_content,
             "evaluation": eval_result.to_dict(),
+            "image_delivery": image_delivery,
+            "evaluation_validity": evaluation_validity,
             "should_continue": should_continue,
             "phase": phase.phase_name,
-            "difficulty": self.task_state.difficulty_level
+            "difficulty": self.task_state.difficulty_level,
+            "images_sent": images_to_send,
+            **turn_protocol,
         }
 
     def _get_images_for_turn(self, action: str) -> List[str]:
@@ -892,31 +1487,354 @@ class StrategicSimulator:
 
         For multimodal testing, we need to send ALL images on EVERY turn
         so the model can actually see and process the visual content.
+
+        === Phase 2 Task 2.1: Enhanced image path resolution ===
+        This method has been improved with:
+        - Robust path resolution with multiple fallback strategies
+        - Detailed logging for debugging
+        - Better error handling
+        - Caching for performance optimization
+
+        === Phase 2 Task 2.5: Use ImagePolicyManager for unified strategy ===
+        Now uses ImagePolicyManager to determine which images to send based on policy.
         """
         if not self.task_state or not self.task_state.images:
+            if self.verbose:
+                logger.warning("[Image Resolution] No task_state or no images in task")
             return []
 
-        # Send all images for all actions (multimodal testing requires this)
-        valid_images = []
-        for img_rel_path in self.task_state.images:
-            # Try to find the image file
-            # Images are stored relative to task file location
-            # Common patterns: generated_tasks_v2/run_XX/images/...
+        if self.verbose:
+            logger.info(f"[Image Resolution] Resolving {len(self.task_state.images)} images for action '{action}'")
+            logger.debug(f"[Image Resolution] Current working directory: {Path.cwd()}")
+            logger.debug(f"[Image Resolution] Images to resolve: {self.task_state.images}")
 
-            # Method 1: Check if path already exists as-is (relative to cwd)
-            img_path = Path(img_rel_path)
-            if img_path.exists():
-                valid_images.append(str(img_path))
-                continue
+        # First, resolve all image paths
+        all_resolved_images = []
+        failed_images = []
 
-            # Method 2: Try different run_XX directories
-            for run_dir in Path("generated_tasks_v2").glob("run_*"):
+        for img_idx, img_rel_path in enumerate(self.task_state.images):
+            if self.verbose:
+                logger.debug(f"[Image Resolution] [{img_idx+1}/{len(self.task_state.images)}] Resolving: {img_rel_path}")
+
+            resolved_path = self._resolve_single_image_path(img_rel_path, img_idx)
+
+            if resolved_path:
+                all_resolved_images.append(resolved_path)
+                if self.verbose:
+                    logger.debug(f"[Image Resolution] ✓ Resolved to: {resolved_path}")
+            else:
+                failed_images.append(img_rel_path)
+                if self.verbose:
+                    logger.warning(f"[Image Resolution] ✗ Failed to resolve: {img_rel_path}")
+
+        # Summary
+        if self.verbose:
+            logger.info(f"[Image Resolution] Summary: {len(all_resolved_images)}/{len(self.task_state.images)} images resolved")
+            if failed_images:
+                logger.error(f"[Image Resolution] Failed images: {failed_images}")
+
+        # Validation: Raise error if NO images could be resolved but some were expected
+        if not all_resolved_images and self.task_state.images:
+            error_msg = (
+                f"[CRITICAL] Failed to resolve ANY images for task {self.task_state.task_id}!\n"
+                f"  Expected {len(self.task_state.images)} images: {self.task_state.images}\n"
+                f"  Current working directory: {Path.cwd()}\n"
+                f"  This will cause the model to receive no visual input, making evaluation invalid."
+            )
+            logger.error(error_msg)
+
+            # In verbose mode, raise an exception to prevent invalid evaluation
+            if self.verbose:
+                raise RuntimeError(error_msg)
+
+        # === Phase 2 Task 2.5: Use ImagePolicyManager to decide which images to send ===
+        images_to_send = self.image_policy.get_images_to_send(
+            all_images=all_resolved_images,
+            turn=self.turn_count,
+            action=action
+        )
+
+        if self.verbose and len(images_to_send) != len(all_resolved_images):
+            logger.info(f"[Image Policy] Sending {len(images_to_send)}/{len(all_resolved_images)} images based on policy")
+
+        return images_to_send
+
+    def _resolve_single_image_path(self, img_rel_path: str, img_idx: int = 0) -> Optional[str]:
+        """Resolve a single image path using multiple strategies
+
+        === Phase 2 Task 2.1: Multi-strategy path resolution ===
+
+        Resolution strategies (in order):
+        1. Direct path (relative to cwd)
+        2. Absolute path check
+        3. Search in generated_tasks_v2/run_* directories
+        4. Search in project root / common image directories
+
+        Args:
+            img_rel_path: The relative path from task definition
+            img_idx: Index of the image (for logging)
+
+        Returns:
+            Resolved absolute path as string, or None if not found
+        """
+        # Strategy 1: Direct path (relative to cwd)
+        img_path = Path(img_rel_path)
+        if img_path.exists():
+            if self.verbose:
+                logger.debug(f"[Strategy 1] Found via direct path: {img_path}")
+            return str(img_path.resolve())
+
+        # Strategy 2: Check if it's already an absolute path
+        if img_path.is_absolute():
+            if self.verbose:
+                logger.debug(f"[Strategy 2] Path is absolute but doesn't exist: {img_path}")
+            return None
+
+        # Strategy 3: Search in generated_tasks_v2/run_* directories
+        # This is the most common case - images are stored in run_XX/images/
+        generated_tasks_dir = Path("generated_tasks_v2")
+        if generated_tasks_dir.exists():
+            # Get all run_XX directories, sorted by modification time (newest first)
+            run_dirs = sorted(
+                generated_tasks_dir.glob("run_*"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                reverse=True
+            )
+
+            for run_dir in run_dirs:
                 potential_path = run_dir / img_rel_path
                 if potential_path.exists():
-                    valid_images.append(str(potential_path))
-                    break
+                    if self.verbose:
+                        logger.debug(f"[Strategy 3] Found in {run_dir.name}: {potential_path}")
+                    return str(potential_path.resolve())
 
-        return valid_images
+                # Also try without the "images/" prefix if it's in the path
+                if "images/" in img_rel_path or "images\\" in img_rel_path:
+                    # Try the path as-is within the run directory
+                    alt_path = run_dir / img_rel_path
+                    if alt_path.exists():
+                        if self.verbose:
+                            logger.debug(f"[Strategy 3b] Found (alt) in {run_dir.name}: {alt_path}")
+                        return str(alt_path.resolve())
+
+        # Strategy 4: Search in common image directories at project root
+        common_dirs = ["images", "data/images", "assets/images"]
+        project_root = Path.cwd()
+
+        for common_dir in common_dirs:
+            potential_path = project_root / common_dir / img_rel_path
+            if potential_path.exists():
+                if self.verbose:
+                    logger.debug(f"[Strategy 4] Found in common directory '{common_dir}': {potential_path}")
+                return str(potential_path.resolve())
+
+            # Also try without duplicating "images" in the path
+            img_filename = Path(img_rel_path).name
+            potential_path = project_root / common_dir / img_filename
+            if potential_path.exists():
+                if self.verbose:
+                    logger.debug(f"[Strategy 4b] Found filename in '{common_dir}': {potential_path}")
+                return str(potential_path.resolve())
+
+        # All strategies failed
+        if self.verbose:
+            logger.debug(f"[Resolution Failed] Tried all strategies for: {img_rel_path}")
+        return None
+
+    # =========================================================================
+    # Phase 2 Task 2.4: Truth Validation Mechanism
+    # =========================================================================
+
+    def _validate_model_claims(
+        self,
+        response: str,
+        turn_number: int,
+        evaluation: EvaluationResult
+    ) -> Dict[str, Any]:
+        """Validate model claims against ground truth
+
+        This method checks whether the model's response contains false claims
+        by comparing against the expected answer and evaluation score.
+
+        Args:
+            response: The model's response text
+            turn_number: Current turn number
+            evaluation: The evaluation result for this response
+
+        Returns:
+            Dict containing:
+                - claims: List of extracted claims with validation status
+                - has_false_claims: Boolean indicating if any false claims detected
+                - false_claim_count: Number of false claims
+                - validation_summary: Human-readable summary
+        """
+        # Extract factual claims from response
+        claims = self._extract_factual_claims(response)
+
+        validated_claims = []
+        false_claim_count = 0
+
+        # Validate each claim
+        for claim in claims:
+            is_correct = self._check_claim_against_ground_truth(
+                claim=claim,
+                ground_truths=self.task_state.ground_truths if self.task_state else {},
+                expected_answer=self.task_state.expected_answer if self.task_state else "",
+                evaluation_score=evaluation.score
+            )
+
+            validated_claims.append({
+                "claim": claim,
+                "is_correct": is_correct,
+                "turn": turn_number,
+                "confidence": "high" if evaluation.score > 0.7 else "medium" if evaluation.score > 0.4 else "low"
+            })
+
+            if not is_correct:
+                false_claim_count += 1
+
+        total_claims = len(validated_claims)
+        correct_claims = total_claims - false_claim_count
+
+        return {
+            "claims": validated_claims,
+            "has_false_claims": false_claim_count > 0,
+            "false_claim_count": false_claim_count,
+            "total_claims": total_claims,
+            "validation_summary": f"{correct_claims}/{total_claims} claims validated"
+        }
+
+    def _extract_factual_claims(self, response: str) -> List[str]:
+        """Extract verifiable factual claims from a response
+
+        This is a simplified implementation that extracts sentences
+        that appear to be factual statements.
+
+        Args:
+            response: The model's response text
+
+        Returns:
+            List of extracted factual claim strings
+        """
+        # Split by sentence boundaries
+        sentences = re.split(r'[.!?]+', response)
+        claims = []
+
+        # Patterns that indicate non-factual statements
+        non_factual_patterns = [
+            r'^I think',
+            r'^I believe',
+            r'^Maybe',
+            r'^Perhaps',
+            r'^It seems',
+            r'^I apologize',
+            r'^I\'m sorry',
+            r'^I cannot',
+            r'^I can\'t',
+            r'^I don\'t',
+            r'^I am not',
+            r'^As an AI',
+            r'^As a text',
+            r'^Unfortunately',
+        ]
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+
+            # Skip too short sentences
+            if len(sentence) < 10:
+                continue
+
+            # Skip non-factual statements
+            is_non_factual = any(
+                re.match(pattern, sentence, re.IGNORECASE)
+                for pattern in non_factual_patterns
+            )
+
+            if not is_non_factual:
+                claims.append(sentence)
+
+        return claims
+
+    def _check_claim_against_ground_truth(
+        self,
+        claim: str,
+        ground_truths: Dict[str, Any],
+        expected_answer: str,
+        evaluation_score: float
+    ) -> bool:
+        """Check if a claim aligns with ground truth
+
+        Uses a multi-strategy approach:
+        1. High evaluation score (>0.7) → assume correct
+        2. Low evaluation score (<0.4) → assume incorrect
+        3. Medium score → use heuristic comparison
+
+        Args:
+            claim: The claim to validate
+            ground_truths: Dictionary of ground truth facts
+            expected_answer: The expected answer for the task
+            evaluation_score: The evaluation score for this response
+
+        Returns:
+            Boolean indicating if the claim is correct
+        """
+        # Strategy 1: Use evaluation score as primary indicator
+        if evaluation_score >= 0.7:
+            return True  # High score → likely correct
+
+        if evaluation_score < 0.4:
+            return False  # Low score → likely incorrect
+
+        # Strategy 2: For medium scores, use heuristic comparison
+        # Check if claim contains key elements from expected answer
+        if expected_answer:
+            expected_lower = expected_answer.lower()
+            claim_lower = claim.lower()
+
+            # Simple keyword overlap check
+            expected_words = set(expected_lower.split())
+            claim_words = set(claim_lower.split())
+
+            # Remove common words
+            common_words = {'the', 'a', 'an', 'is', 'are', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or'}
+            expected_words -= common_words
+            claim_words -= common_words
+
+            if expected_words and claim_words:
+                overlap = len(expected_words & claim_words) / len(expected_words)
+                if overlap > 0.3:
+                    return True
+
+        # Default: use score threshold
+        return evaluation_score >= 0.5
+
+    def _generate_consistency_check_from_ground_truth(self) -> str:
+        """Generate a consistency check question based on ground truth
+
+        Instead of referencing the model's previous claims (which may be wrong),
+        this method generates a question that asks the model to re-answer
+        the original question.
+
+        Returns:
+            A reformulated question for consistency checking
+        """
+        if not self.task_state:
+            return "Please confirm your answer."
+
+        original_q = self.task_state.question
+
+        # Various reformulation templates
+        reformulations = [
+            f"让我们再确认一次: {original_q}",
+            f"回到最初的问题: {original_q}",
+            f"请再次回答: {original_q}",
+            f"Let's verify: {original_q}",
+            f"To confirm, {original_q.lower() if original_q[0].isupper() else original_q}",
+            f"One more time: {original_q}",
+        ]
+
+        return random.choice(reformulations)
 
     def _should_continue(self) -> bool:
         """Determine if task should continue"""
@@ -950,16 +1868,24 @@ class StrategicSimulator:
         return True
 
     def run_consistency_check(self) -> Dict[str, Any]:
-        """Run final consistency check ("回马枪")"""
+        """Run final consistency check ("回马枪") - based on ground truth (Task 2.4)
+
+        This method now generates questions based on ground truth rather than
+        referencing the model's own potentially incorrect claims.
+        """
         if not self.task_state or not self.enable_consistency_check:
             return {}
 
         if self.verbose:
             print(f"\n--- Consistency Check (回马枪) ---")
 
-        message = f"让我们回到最初的问题。{self.task_state.question}"
+        # === Phase 2 Task 2.4: Use ground truth for consistency check ===
+        message = self._generate_consistency_check_from_ground_truth()
 
-        target_messages = self.memory.get_conversation_history()
+        # Use filtered history (exclude incorrect turns) - Task 2.4
+        target_messages = self.memory.get_conversation_history(
+            filter_incorrect=True  # Only include correct turns for final check
+        )
         target_messages.append({"role": "user", "content": message})
 
         response = self.llm_client.call_target_model(
@@ -970,10 +1896,23 @@ class StrategicSimulator:
         model_content = response.get("content", "") if response.get("success") else ""
 
         # Compare with expected
+        legacy_delivery = self._build_legacy_unverified_delivery(
+            reason="placeholder_side_path_consistency_check"
+        )
         eval_result = self.evaluator.evaluate_response(
             response=model_content,
             expected_answer=self.task_state.expected_answer,
-            action_type="consistency_check"
+            action_type="consistency_check",
+            question_asked=message,
+            context={
+                "turn_input_mode": "memory_only",
+                "visible_image_refs": [],
+                "memory_image_refs": [],
+                "new_images_sent_count": 0,
+                "image_delivery": legacy_delivery,
+                "evaluation_validity": "legacy_unverified",
+                "current_question_scope": {"expected_source": "either"}
+            }
         )
 
         if self.verbose:
@@ -984,13 +1923,15 @@ class StrategicSimulator:
             "question": message,
             "response": model_content,
             "score": eval_result.score,
-            "expected": self.task_state.expected_answer
+            "expected": self.task_state.expected_answer,
+            "grounded_in_truth": True  # NEW: Flag that this is ground-truth based
         })
 
         return {
             "passed": eval_result.score > 0.7,
             "score": eval_result.score,
-            "response": model_content
+            "response": model_content,
+            "grounded_check": True  # NEW: Indicate this was a ground-truth based check
         }
 
     def run_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
@@ -1013,6 +1954,46 @@ class StrategicSimulator:
 
         return report
 
+    def _roll_up_task_validity(
+        self,
+        runtime_turns: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        invalid_turns: List[int] = []
+        evidence_sources: List[str] = []
+        status = "valid"
+        reason = None
+
+        for idx, turn in enumerate(runtime_turns, start=1):
+            if not isinstance(turn, dict):
+                continue
+            turn_validity = turn.get("evaluation_validity", "valid")
+            image_delivery = turn.get("image_delivery") or {}
+            evidence_source = image_delivery.get("evidence_source")
+            if evidence_source and evidence_source not in evidence_sources:
+                evidence_sources.append(evidence_source)
+
+            if turn_validity == "invalid_due_to_delivery":
+                invalid_turns.append(idx)
+                status = "invalid_due_to_delivery"
+                reason = "invalid_due_to_delivery"
+                break
+            if turn_validity == "excluded_unverified_delivery" and status == "valid":
+                invalid_turns.append(idx)
+                status = "excluded_unverified_delivery"
+                reason = "excluded_unverified_delivery"
+            elif turn_validity == "legacy_unverified" and status == "valid":
+                invalid_turns.append(idx)
+                status = "legacy_unverified"
+                reason = "legacy_unverified"
+
+        return {
+            "status": status,
+            "reason": reason,
+            "invalid_turns": invalid_turns,
+            "first_invalid_turn": invalid_turns[0] if invalid_turns else None,
+            "evidence_sources": evidence_sources,
+        }
+
     def _generate_task_report(
         self,
         turn_results: List[Dict[str, Any]],
@@ -1024,6 +2005,35 @@ class StrategicSimulator:
 
         aggregate = self.evaluator.get_aggregate_scores()
         evaluator_report = self.evaluator.generate_final_report()
+
+        runtime_turns = [r["evaluation"] for r in turn_results if "evaluation" in r]
+        official_aggregate = aggregate if isinstance(aggregate, dict) else {}
+        valid_turn_count = official_aggregate.get("turn_count_valid", 0)
+        total_turn_count = official_aggregate.get("total_turns", len(runtime_turns))
+        turn_validities = [
+            turn.get("evaluation_validity", "valid")
+            for turn in runtime_turns
+            if isinstance(turn, dict)
+        ]
+
+        task_validity = self._roll_up_task_validity(runtime_turns)
+        excluded_reason = task_validity.get("status") if task_validity.get("status") != "valid" else None
+
+        official_report = {
+            "included": excluded_reason is None,
+            "excluded_reason": excluded_reason,
+            "aggregate": official_aggregate,
+            "per_dimension": official_aggregate.get("per_dimension", {}),
+            "overall": official_aggregate.get("overall") if excluded_reason is None else None,
+            "task_count_valid": 1 if excluded_reason is None else 0,
+            "turn_count_valid": valid_turn_count,
+            "turn_count_total": total_turn_count,
+            "invalid_sample_summary": {
+                "invalid_task_count": 0 if excluded_reason is None else 1,
+                "invalid_turn_count": max(0, total_turn_count - valid_turn_count),
+                "excluded_reasons": {} if excluded_reason is None else {excluded_reason: 1},
+            },
+        }
 
         return {
             "task_id": self.task_state.task_id,
@@ -1039,18 +2049,28 @@ class StrategicSimulator:
             },
 
             "scores": {
-                "aggregate": aggregate,
-                "per_turn": [r["evaluation"]["score"] for r in turn_results if "evaluation" in r],
+                "aggregate": official_aggregate,
+                "per_turn": [r.get("official_overall_score") for r in runtime_turns],
                 "consistency_check": consistency
             },
+
+            "runtime": {
+                "turn_evaluations": runtime_turns,
+                "aggregate": official_aggregate,
+                "consistency_check": consistency,
+            },
+
+            "official_report": official_report,
+            "task_validity": task_validity,
 
             "stress_test": {
                 "misleading_attempts": len(self.task_state.injected_falsehoods),
                 "resistance_rate": evaluator_report.get("stress_test_summary", {}).get("resistance_rate", 0),
-                "memory_stability": aggregate.get("memory_retention", 0)
+                "memory_stability": (official_aggregate.get("per_dimension", {}).get("memory_retention", {}) or {}).get("score")
             },
 
-            "evaluator_report": evaluator_report
+            "evaluator_report": evaluator_report,
+            "state_report": self.get_state_report() if hasattr(self, "get_state_report") else None
         }
 
     def _log_event(self, event_type: str, data: Dict[str, Any]):
@@ -1312,6 +2332,9 @@ class StrategicSimulator:
             print(f"Response: {model_content[:150]}...")
 
         # 评估响应
+        legacy_delivery = self._build_legacy_unverified_delivery(
+            reason="placeholder_side_path_chain_step"
+        )
         eval_result = self.evaluator.evaluate_response(
             response=model_content,
             expected_answer=query.expected_info,
@@ -1319,7 +2342,14 @@ class StrategicSimulator:
             question_asked=query.query,
             context={
                 "step_type": query.step_type,
-                "validation_hints": query.validation_hints
+                "validation_hints": query.validation_hints,
+                "turn_input_mode": "text_only",
+                "visible_image_refs": [],
+                "memory_image_refs": [],
+                "new_images_sent_count": 0,
+                "image_delivery": legacy_delivery,
+                "evaluation_validity": "legacy_unverified",
+                "current_question_scope": {"expected_source": "either"}
             }
         )
 
@@ -1391,12 +2421,24 @@ class StrategicSimulator:
         model_content = response.get("content", "") if response.get("success") else ""
 
         # 评估抗误导能力
+        legacy_delivery = self._build_legacy_unverified_delivery(
+            reason="placeholder_side_path_chain_stress"
+        )
         eval_result = self.evaluator.evaluate_response(
             response=model_content,
             expected_answer=current_result['response'],  # 期望维持原有答案
             action_type="mislead",
             question_asked=message,
-            context={"is_chain_stress_test": True}
+            context={
+                "is_chain_stress_test": True,
+                "turn_input_mode": "text_only",
+                "visible_image_refs": [],
+                "memory_image_refs": [],
+                "new_images_sent_count": 0,
+                "image_delivery": legacy_delivery,
+                "evaluation_validity": "legacy_unverified",
+                "current_question_scope": {"expected_source": "either"}
+            }
         )
 
         if verbose:
@@ -1464,12 +2506,24 @@ class StrategicSimulator:
 
         # 与预期答案比较
         expected_answer = task.get('answer', '')
+        legacy_delivery = self._build_legacy_unverified_delivery(
+            reason="placeholder_side_path_chain_final_consistency"
+        )
         eval_result = self.evaluator.evaluate_response(
             response=model_content,
             expected_answer=expected_answer,
             action_type="consistency_check",
             question_asked=task.get('question', ''),
-            context={"is_chain_final": True}
+            context={
+                "is_chain_final": True,
+                "turn_input_mode": "memory_only",
+                "visible_image_refs": [],
+                "memory_image_refs": [],
+                "new_images_sent_count": 0,
+                "image_delivery": legacy_delivery,
+                "evaluation_validity": "legacy_unverified",
+                "current_question_scope": {"expected_source": "either"}
+            }
         )
 
         if verbose:

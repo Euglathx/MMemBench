@@ -1,0 +1,237 @@
+======================================================================
+Expected Answer Tracking Validation Report
+Task 1.3: Verify Turn-Level Expected Answer Usage
+======================================================================
+
+Status: FAIL ❌
+Timestamp: 2026-02-03T13:44:10.007223
+
+======================================================================
+PROBLEM SUMMARY
+======================================================================
+
+Total turns analyzed: 264
+Turns using task-level expected_answer: 264 (100.0%)
+Turns that SHOULD use turn-level expected: 71
+Potential misjudged cases found: 6
+
+The core issue is that ALL turns are evaluated against the task's
+final expected answer, even intermediate turns that test different aspects.
+
+======================================================================
+PHASE ANALYSIS
+======================================================================
+
+Phase: grounding
+  Count: 56
+  ⚠️ Should use turn-level
+  Potential misjudgments: 2
+  Purpose: Establish baseline understanding
+
+Phase: noise_injection
+  Count: 56
+  ✓ Can use task-level
+  Potential misjudgments: 0
+  Purpose: Unknown
+
+Phase: stress_test
+  Count: 56
+  ✓ Can use task-level
+  Potential misjudgments: 0
+  Purpose: Unknown
+
+Phase: final_evaluation
+  Count: 56
+  ✓ Can use task-level
+  Potential misjudgments: 0
+  Purpose: Should match task expected_answer
+
+Phase: entity_grounding
+  Count: 5
+  ⚠️ Should use turn-level
+  Potential misjudgments: 2
+  Purpose: Identify/locate the target entity
+
+Phase: chain_navigation
+  Count: 10
+  ⚠️ Should use turn-level
+  Potential misjudgments: 2
+  Purpose: Find the next object in the chain (NOT final answer)
+
+Phase: chain_verification
+  Count: 10
+  ✓ Can use task-level
+  Potential misjudgments: 0
+  Purpose: Final answer verification
+
+Phase: noise_during_reasoning
+  Count: 10
+  ✓ Can use task-level
+  Potential misjudgments: 0
+  Purpose: Unknown
+
+Phase: final_answer
+  Count: 5
+  ✓ Can use task-level
+  Potential misjudgments: 0
+  Purpose: Should match task expected_answer
+
+======================================================================
+EVIDENCE OF MISJUDGMENT
+======================================================================
+
+Case 1: abr_mscoco_1, Turn 1
+  Phase: entity_grounding
+  Question: Before we solve the full puzzle, let's start with the basics. Can you locate the person in the image...
+  Model Response: The person in the image is on the right side of the frame, facing left. They are standing in what ap...
+  Expected (used): The final object is a knife...
+  Should be: Model should identify/describe the person
+  LLM Correctness: 10/10
+  Evaluation: FAIL (score=0.66)
+  Evidence: LLM gave 10/10 but level_passed=False (intermediate phase 'entity_grounding')
+
+Case 2: abr_mscoco_1, Turn 2
+  Phase: chain_navigation
+  Question: Great. Now, following the spatial path in the original request, look immediately to the left of that...
+  Model Response: Immediately to the left of the person, there is a large, rectangular cake with white frosting. It ha...
+  Expected (used): The final object is a knife...
+  Should be: The object left the person
+  LLM Correctness: 7/10
+  Evaluation: FAIL (score=0.61)
+  Evidence: Score 0.61 close to threshold but failed (intermediate phase)
+
+Case 3: abr_mscoco_2, Turn 3
+  Phase: chain_navigation
+  Question: Great, you identified the skateboard below the person. Now, look to one side of that skateboard. Wha...
+  Model Response: Immediately to the left of the skateboard is a bicycle....
+  Expected (used): The final object is a bicycle...
+  Should be: The object below the person
+  LLM Correctness: 10/10
+  Evaluation: FAIL (score=0.66)
+  Evidence: LLM gave 10/10 but level_passed=False (intermediate phase 'chain_navigation')
+
+Case 4: abr_mscoco_3, Turn 1
+  Phase: entity_grounding
+  Question: Let's start by finding the first object mentioned. Can you locate the skateboard in the image and de...
+  Model Response: The skateboard is positioned beneath the person, appearing to be in mid-air, having just been jumped...
+  Expected (used): The final object is a chair...
+  Should be: Model should identify/describe the skateboard
+  LLM Correctness: 7/10
+  Evaluation: FAIL (score=0.57)
+  Evidence: Response focuses on intermediate step, not final answer (correctness=7)
+
+Case 5: ac_mscoco_0, Turn 1
+  Phase: grounding
+  Question: ```json { "action": "fine_grained", "message": "Let's begin by examining Image 1. Could you precisel...
+  Model Response: The person in Image 1, the young girl, occupies a significant portion of the vertical frame. Her hea...
+  Expected (used): Image 2 has the person bottommost...
+  Should be: Model should describe relevant attributes
+  LLM Correctness: 8/10
+  Evaluation: FAIL (score=0.68)
+  Evidence: LLM gave 8/10 but level_passed=False (intermediate phase 'grounding')
+
+Case 6: ac_mscoco_1, Turn 1
+  Phase: grounding
+  Question: Let's start with the first image (image_0.png). How many people can you see in this image? Please de...
+  Model Response: In the first image, there are three people visible.
+
+1.  **A young girl** is prominently featured on...
+  Expected (used): Image 0 has 3 person(s)...
+  Should be: Model should describe relevant attributes
+  LLM Correctness: 10/10
+  Evaluation: FAIL (score=0.66)
+  Evidence: LLM gave 10/10 but level_passed=False (intermediate phase 'grounding')
+
+======================================================================
+CODE ARCHITECTURE ANALYSIS
+======================================================================
+
+Supports turn-level expected: False
+TaskState has turn_ground_truths: False
+Evaluator uses: task-level expected_answer (self.task_state.expected_answer)
+Simulator generates turn expected: False
+
+Code Locations:
+  - evaluator_call: strategic_simulator.py:818-827 - passes self.task_state.expected_answer
+  - TaskState_definition: strategic_simulator.py:55-79 - no turn_ground_truths field
+  - evaluate_response: evaluator.py:852-874 - expected_answer parameter is task-level
+  - TASK_STRATEGIES: action_space.py:528-684 - defines phases but not per-turn expected
+
+Missing Components:
+  - TurnGroundTruth dataclass
+  - turn_ground_truths field in TaskState
+  - Turn-level expected_answer generation in _generate_question()
+  - Turn-level expected_answer passing to evaluator.evaluate_response()
+
+======================================================================
+WHY THIS IS SERIOUS (P1 HIGH)
+======================================================================
+
+1. Violates Information Decoupling principle
+   - Models are expected to reveal final answer in turn 1
+   - Creates 'hindsight bias' in evaluation
+
+2. Encourages wrong model behavior
+   - Model that says 'I see a person and a knife' passes
+   - Model that focuses on asked entity ('find the person') fails
+
+3. Makes evaluation meaningless for intermediate turns
+   - Can't test step-by-step reasoning
+   - Can't isolate error sources
+   - Model could fail entity_grounding but pass final_answer
+
+======================================================================
+CURRENT CODE PATTERN (PROBLEMATIC)
+======================================================================
+
+```python
+# In strategic_simulator.py:818-827
+eval_result = self.evaluator.evaluate_response(
+    response=model_content,
+    expected_answer=self.task_state.expected_answer,  # ❌ Always task-level!
+    action_type=action,
+    question_asked=message,
+    context={...}
+)
+```
+
+======================================================================
+RECOMMENDED ARCHITECTURE
+======================================================================
+
+```python
+@dataclass
+class TurnGroundTruth:
+    turn_id: int
+    phase: str
+    sub_goal: str  # e.g., 'identify_entity', 'spatial_relation'
+    expected_answer: str  # Turn-specific answer
+    acceptable_variations: List[str]
+
+@dataclass
+class TaskState:
+    ...
+    turn_ground_truths: Dict[int, TurnGroundTruth]  # NEW
+    current_turn_ground_truth: TurnGroundTruth  # NEW
+```
+
+======================================================================
+IMPACT ON DESIGN GOALS
+======================================================================
+
+❌ Information Decoupling: BROKEN
+❌ Step-by-step evaluation: IMPOSSIBLE
+❌ Error source isolation: UNRELIABLE
+✓ Final answer check: Still works (only for final_answer phase)
+
+Severity: P1 HIGH
+This is a fundamental architecture gap, not just a bug.
+
+======================================================================
+DELIVERABLES
+======================================================================
+
+Files generated:
+- phase1_1.3_expected_answer.json (machine-readable)
+- phase1_1.3_validation_report.txt (this report)
+- phase1_1.3_misjudged_cases.csv (all cases)

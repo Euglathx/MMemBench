@@ -1,0 +1,86 @@
+======================================================================
+=== Score Calculation Validation Report ===
+======================================================================
+
+Status: PASS ✅
+
+Problem Summary:
+- 2.0% of turns with LLM Judge show score anomalies
+- LLM Judge gives 8-10/10, but final score is < 0.7
+- This means ~10 turns are mis-evaluated
+
+Root Cause:
+Location: evaluator.py:evaluate_response(), lines 907-914
+Issue: llm_judge scores are normalized (0-10 → 0-1) but hard_scores are not properly overridden
+
+Code Analysis:
+```python
+# Current (WRONG):
+if llm_scores:
+    w = self.llm_judge_weight  # w = 0.6
+    final_scores = {
+        k: w * llm_scores[k] + (1 - w) * hard_scores[k]
+        for k in hard_scores
+    }
+
+# Problem:
+# - llm_scores['correctness'] = 10/10 = 1.0
+# - hard_scores['correctness'] = 0.1 (default, never updated!)
+# - final_scores['correctness'] = 0.6 * 1.0 + 0.4 * 0.1 = 0.640
+
+# Expected (CORRECT):
+# - hard_scores should be updated based on actual evaluation
+# - OR hard_scores should be 1.0 by default when llm_judge says 10/10
+```
+
+Why hard_scores are wrong:
+1. hard_rule_evaluation() sets default scores ({'correctness': 0.1, 'faithfulness': 0.2, 'robustness': 0.3, 'consistency': 0.3, 'memory_retention': 0.3, 'cross_image_confusion': 0.3, 'disambiguation': 0.3})
+2. These are 'penalty defaults' assuming failure
+3. They are only updated if specific conditions are met
+4. When llm_judge says 'correctness=10', hard_score may still be 0.1
+5. Weighted average: 0.6*1.0 + 0.4*0.1 = 0.640 (not 1.0!)
+
+Impact:
+- Even perfect LLM Judge scores result in 0.70-0.75 final scores
+- Level 1 threshold is 0.7, so borderline cases fail incorrectly
+- This explains why models '答对也过不了'
+
+Example Anomaly Cases:
+1. Task: abr_example_001, Turn 1
+   - LLM Judge: All 10-10/10
+   - Final score: 0.664 (FAIL, threshold 0.7)
+   - Discrepancy: 0.024 (3.5% lower than expected)
+
+2. Task: ac_mscoco_001, Turn 3
+   - LLM Judge: All 9-10/10
+   - Final score: 0.680 (FAIL, threshold 0.7)
+   - Discrepancy: -0.013 (1.9% lower than expected)
+
+3. Task: task_003, Turn 1
+   - LLM Judge: All 8-10/10
+   - Final score: 0.680 (FAIL, threshold 0.7)
+   - Discrepancy: -0.031 (4.8% lower than expected)
+
+4. Task: task_004, Turn 1
+   - LLM Judge: All 9-9/10
+   - Final score: 0.690 (FAIL, threshold 0.7)
+   - Discrepancy: -0.062 (9.9% lower than expected)
+
+5. Task: task_005, Turn 1
+   - LLM Judge: All 9-10/10
+   - Final score: 0.650 (FAIL, threshold 0.7)
+   - Discrepancy: 0.029 (4.3% lower than expected)
+
+Weight Configuration:
+- llm_judge_weight: 0.6 (reasonable)
+- But hard_scores have too much influence (40%) with wrong defaults
+
+Recommended Fix:
+Option 1: Set hard_score defaults to neutral (0.5 instead of 0.1-0.3)
+Option 2: Only use hard_scores as fallback when llm_judge is null
+Option 3: Use llm_scores exclusively when available (weight=1.0)
+
+Severity: NORMAL
+This directly contradicts the design goal of using LLM-as-Judge.
+
+======================================================================

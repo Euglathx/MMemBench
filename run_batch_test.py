@@ -31,7 +31,8 @@ from src.simulator import (
     BatchConfig,
     LLMClient,
     Evaluator,
-    EvaluationMode
+    EvaluationMode,
+    StateAwareEvaluator,
 )
 
 logging.basicConfig(
@@ -192,6 +193,14 @@ def parse_args():
         '--verbose', '-v', action='store_true',
         help='详细输出'
     )
+    parser.add_argument(
+        '--enable-stateful-runtime', action='store_true',
+        help='使用 state-aware formal runtime（StatefulStrategicSimulator + StateAwareEvaluator）'
+    )
+    parser.add_argument(
+        '--require-state-schema', action='store_true',
+        help='要求任务必须携带有效 state_schema，否则直接标记为 invalid'
+    )
 
     return parser.parse_args()
 
@@ -238,7 +247,11 @@ def main():
     if args.core_model:
         llm_kwargs['core_model'] = args.core_model
     llm_client = LLMClient(**llm_kwargs)
-    evaluator = Evaluator(mode=EvaluationMode.STRESS_TEST)
+    evaluator = (
+        StateAwareEvaluator(mode=EvaluationMode.STRESS_TEST)
+        if args.enable_stateful_runtime or args.require_state_schema
+        else Evaluator(mode=EvaluationMode.STRESS_TEST)
+    )
 
     # 配置批处理
     enable_memory_test = args.enable_memory_test and not args.disable_memory_test
@@ -248,7 +261,9 @@ def main():
         max_turns_per_task=args.max_turns_per_task,
         transition_style=args.transition_style,
         enable_cross_task_memory_test=enable_memory_test,
-        cross_task_memory_interval=args.memory_test_interval
+        cross_task_memory_interval=args.memory_test_interval,
+        enable_stateful_runtime=args.enable_stateful_runtime or args.require_state_schema,
+        require_state_schema=args.require_state_schema,
     )
 
     batch_simulator = BatchTaskSimulator(
@@ -311,7 +326,9 @@ def main():
                 'min_turns_per_task': args.min_turns_per_task,
                 'max_turns_per_task': args.max_turns_per_task,
                 'transition_style': args.transition_style,
-                'enable_memory_test': enable_memory_test
+                'enable_memory_test': enable_memory_test,
+                'enable_stateful_runtime': args.enable_stateful_runtime or args.require_state_schema,
+                'require_state_schema': args.require_state_schema,
             },
             'results': all_results,
             'summary': summary

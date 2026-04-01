@@ -1,0 +1,52 @@
+# 端到端测试配置文件
+
+# ============ 数据配置 ============
+# 方式1: 从数据目录加载
+data_dir: "data/sample"
+max_tasks: 5  # 最多测试几个任务
+
+# 方式2: 直接使用DataProvider生成的JSON（可选，优先级高于data_dir）
+# tasks_json: "output/data_provider_test.json"
+
+# ============ VLM配置 ============
+vlm:
+  # API类型: "openai" (OpenAI兼容) 或 "custom" (自定义接口)
+  api_type: "openai"
+
+  # API地址
+  # OpenAI官方: https://api.openai.com/v1/chat/completions
+  # Qwen-VL: 你的Qwen-VL服务地址
+  # 其他兼容服务: 相应的地址
+  api_url: "https://api.openai.com/v1/chat/completions"
+
+  # API密钥
+  api_key: "YOUR_API_KEY_HERE"
+
+  # 模型名称
+  model: "gpt-4-vision-preview"
+  # 其他选项: "gpt-4o", "claude-3-5-sonnet-20240620", "qwen-vl-max"
+
+  # 生成参数
+  max_tokens: 500
+  temperature: 0.7
+
+# ============ 测试配置 ============
+# 最大对话轮次
+max_turns: 5
+
+# 测试的episode数量（从任务列表中选取前N个）
+num_episodes: 2
+
+# 允许的动作类型（如果不指定则使用所有动作）
+allowed_actions:
+  - follow_up
+  - guidance
+  - negation
+  - mislead
+  - update
+  - distraction
+  - redundancy
+  - fine_grained
+
+# 输出文件路径
+output: "output/end_to_end_test.json"

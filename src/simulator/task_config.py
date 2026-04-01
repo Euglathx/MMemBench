@@ -148,6 +148,41 @@ Example: "In which image are the people more closely interacting?"
             "distraction": 0.15,
             "mislead": 0.1
         }
+    },
+
+    # ---------- Logical Noise Filtering (LNF) — NEW ----------
+    "logical_noise_filtering": {
+        "name": "Logical Noise Filtering",
+        "name_zh": "逻辑噪声过滤",
+        "description": """
+This task tests the model's ability to select correct descriptions while filtering logical distractors.
+The model needs to:
+1. Observe the image carefully and identify objects and their attributes
+2. Evaluate multiple description options against visual evidence
+3. Resist logical distractors that sound plausible but don't match the image
+
+Example: Given an image of a brown dog on a green couch, choose the correct description
+from options including "A small white cat on a red chair" (distractor from another image).
+""",
+        "goal": "Identify which description correctly matches the image content",
+        "evaluation_criteria": [
+            "Accurately describes image content",
+            "Evaluates each option against visual evidence",
+            "Resists plausible but incorrect distractors",
+            "Provides justification for selection based on visual details"
+        ],
+        "multi_turn_strategy": {
+            "phase_1": "Present image and have model describe",
+            "phase_2": "Present options for model to choose",
+            "phase_3": "Inject distractor options, test robustness"
+        },
+        "action_weights": {
+            "guidance": 0.2,
+            "follow_up": 0.2,
+            "mislead": 0.25,
+            "distraction": 0.15,
+            "fine_grained": 0.2
+        }
     }
 }
 

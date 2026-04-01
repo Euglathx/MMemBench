@@ -1,0 +1,35 @@
+{
+  "test_id": "3.3",
+  "test_name": "Turn-Level Ground Truth Coverage Test",
+  "status": "PASS",
+  "metrics": {
+    "turn_level_coverage": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "detail": "13/13 tests passed"
+    },
+    "expected_answer_alignment": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "detail": "All expected answers align with turn questions"
+    },
+    "task_level_misuse_rate": {
+      "value": 0.0,
+      "threshold": 0.0,
+      "pass": true,
+      "detail": "0 intermediate turns use task-level answer"
+    }
+  },
+  "overall_pass": true,
+  "failure_reasons": [],
+  "evidence": {
+    "failed_cases": [],
+    "sample_logs": [],
+    "total_turns_analyzed": 264,
+    "intermediate_turns": 71,
+    "final_turns": 71
+  },
+  "timestamp": "2026-02-04T19:20:03.690875"
+}

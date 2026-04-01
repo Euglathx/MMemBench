@@ -24,8 +24,8 @@ class DatasetConfig:
         self.splits = config_dict.get('splits', [])
         self.annotation_format = config_dict.get('annotation_format', {})
         self.capabilities = config_dict.get('capabilities', {})
-        # 同时支持两种键名
         self.supported_tasks = config_dict.get('supported_tasks', [])
+        # 同时支持两种键名
         if not self.supported_tasks:
             self.supported_tasks = config_dict.get('supported_task_types', [])
         self.task_configs = config_dict.get('task_configs', {})
@@ -265,7 +265,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     try:
-        config = load_config("d:\\install_file\\M3Bench\\M3Bench-delivery\\dataprovider\\dataset_configs.yaml")
+        config = load_config()
 
         print("\n" + "="*70)
         print("Dataset Configuration Summary")

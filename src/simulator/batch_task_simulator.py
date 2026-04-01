@@ -22,6 +22,9 @@ import logging
 from .llm_client import LLMClient
 from .evaluator import Evaluator, EvaluationMode, EvaluationResult
 from .strategic_simulator import StrategicSimulator, TaskState
+from .stateful_simulator import StatefulStrategicSimulator
+from .state_aware_evaluator import StateAwareEvaluator
+from .state_schema_types import StateSchema
 from .memory_store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,10 @@ class BatchConfig:
 
     # 模拟器传递参数
     simulator_kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    # State-aware formal mode
+    enable_stateful_runtime: bool = False
+    require_state_schema: bool = False
 
 
 @dataclass
@@ -82,7 +89,8 @@ class BatchResult:
     conversation_log: List[Dict[str, Any]] = field(default_factory=list)
 
     # 聚合分数
-    aggregate_scores: Dict[str, float] = field(default_factory=dict)
+    aggregate_scores: Dict[str, Any] = field(default_factory=dict)
+    batch_validity_summary: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为可序列化的字典"""
@@ -107,7 +115,8 @@ class BatchResult:
             ],
             'cross_task_memory_tests': self.cross_task_memory_tests,
             'conversation_log': self.conversation_log,
-            'aggregate_scores': self.aggregate_scores
+            'aggregate_scores': self.aggregate_scores,
+            'batch_validity_summary': self.batch_validity_summary,
         }
 
 
@@ -148,6 +157,17 @@ class BatchTaskSimulator:
         "We've covered {from_topic}, now let's discuss {to_topic}."
     ]
 
+    OFFICIAL_DIMENSIONS = [
+        'correctness',
+        'faithfulness',
+        'robustness',
+        'consistency',
+        'memory_retention',
+        'cross_image_disambiguation',
+        'ambiguity_recognition',
+        'overall',
+    ]
+
     def __init__(
         self,
         llm_client: LLMClient,
@@ -174,6 +194,13 @@ class BatchTaskSimulator:
         self.session_history: List[Dict[str, Any]] = []
         self.total_turns: int = 0
         self.completed_tasks: List[Dict[str, Any]] = []
+
+    def _reset_session(self):
+        """重置会话状态"""
+        self.session_memory = MemoryStore()
+        self.session_history = []
+        self.total_turns = 0
+        self.completed_tasks = []
 
     def run_batch(self, tasks: List[Dict[str, Any]]) -> BatchResult:
         """
@@ -228,7 +255,16 @@ class BatchTaskSimulator:
             self.total_turns += turns_used
             result.total_turns = self.total_turns
 
-            if task_report.get('completed', False):
+            official_report = self._extract_official_report(task_report, fallback_reason='missing_official_report')
+            task_validity = task_report.get('task_validity') if isinstance(task_report.get('task_validity'), dict) else {
+                'status': official_report.get('excluded_reason') if not official_report.get('included') else 'valid',
+                'reason': official_report.get('excluded_reason'),
+                'invalid_turns': [],
+                'first_invalid_turn': None,
+                'evidence_sources': [],
+            }
+
+            if task_report.get('completed', False) and task_report.get('state_eval_valid', True) and task_validity.get('status') == 'valid':
                 result.tasks_completed += 1
                 self.completed_tasks.append({
                     'task': task,
@@ -270,6 +306,7 @@ class BatchTaskSimulator:
         result.end_time = datetime.now()
         result.conversation_log = self.session_history.copy()
         result.aggregate_scores = self._calculate_aggregate_scores(result.task_results)
+        result.batch_validity_summary = result.aggregate_scores.get('invalid_sample_summary', {}) if isinstance(result.aggregate_scores, dict) else {}
 
         if self.verbose:
             duration = (result.end_time - result.start_time).total_seconds()
@@ -283,12 +320,273 @@ class BatchTaskSimulator:
 
         return result
 
-    def _reset_session(self):
-        """重置会话状态"""
-        self.session_memory = MemoryStore()
-        self.session_history = []
-        self.total_turns = 0
-        self.completed_tasks = []
+    @staticmethod
+    def _validate_state_schema(task: Dict[str, Any]) -> Tuple[bool, Optional[str], Optional[StateSchema]]:
+        """Validate and parse state_schema from task payload."""
+        schema_data = task.get('state_schema')
+        if schema_data is None:
+            return False, 'missing_state_schema', None
+
+        if not isinstance(schema_data, dict):
+            return False, 'invalid_state_schema_type', None
+
+        try:
+            schema = StateSchema.from_dict(schema_data)
+        except Exception as exc:
+            logger.warning("State schema parse failed for %s: %s", task.get('task_id', 'unknown'), exc)
+            return False, 'malformed_state_schema', None
+
+        if not schema.variables:
+            return False, 'empty_state_schema', schema
+
+        return True, None, schema
+
+    def _build_state_eval_summary(
+        self,
+        task: Dict[str, Any],
+        is_valid: bool,
+        invalid_reason: Optional[str],
+        schema: Optional[StateSchema] = None,
+        state_report: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build canonical state-eval summary fields for task outputs."""
+        require_schema = self.config.require_state_schema
+        summary = {
+            'state_eval_required': require_schema,
+            'state_eval_valid': is_valid,
+            'state_eval_invalid_reason': invalid_reason,
+            'state_eval_degraded': (not require_schema and invalid_reason is not None),
+            'state_schema_present': task.get('state_schema') is not None,
+        }
+
+        if schema is not None:
+            summary['state_schema_summary'] = {
+                'variables_total': len(schema.variables),
+                'probing_variables_total': len(schema.probing_variables),
+                'final_question_variables_total': len(schema.final_question_variables),
+            }
+
+        if state_report:
+            summary['state_report'] = state_report
+
+        return summary
+
+    def _build_empty_official_per_dimension(self) -> Dict[str, Dict[str, Any]]:
+        """Return a stable empty official per-dimension payload."""
+        return {
+            dimension: {
+                'score': None,
+                'support': 0,
+                'applicable': False,
+                'reason': 'not_measured',
+            }
+            for dimension in self.OFFICIAL_DIMENSIONS
+        }
+
+    def _extract_official_report(self, result: Dict[str, Any], fallback_reason: str = 'missing_official_report') -> Dict[str, Any]:
+        """Normalize a task-level official report payload."""
+        official_report = result.get('official_report') if isinstance(result, dict) else None
+        if isinstance(official_report, dict):
+            aggregate = official_report.get('aggregate') if isinstance(official_report.get('aggregate'), dict) else {}
+            per_dimension = official_report.get('per_dimension') if isinstance(official_report.get('per_dimension'), dict) else aggregate.get('per_dimension', {})
+            if not isinstance(per_dimension, dict) or not per_dimension:
+                per_dimension = self._build_empty_official_per_dimension()
+            aggregate = {
+                'overall': aggregate.get('overall'),
+                'turn_count_valid': aggregate.get('turn_count_valid', official_report.get('turn_count_valid', 0)),
+                'total_turns': aggregate.get('total_turns', official_report.get('turn_count_total', 0)),
+                'per_dimension': per_dimension,
+                **{k: v for k, v in aggregate.items() if k not in {'overall', 'turn_count_valid', 'total_turns', 'per_dimension'}},
+            }
+            invalid_summary = official_report.get('invalid_sample_summary')
+            if not isinstance(invalid_summary, dict):
+                invalid_summary = {
+                    'invalid_task_count': 0 if official_report.get('included', True) else 1,
+                    'invalid_turn_count': max(0, aggregate.get('total_turns', 0) - aggregate.get('turn_count_valid', 0)),
+                    'excluded_reasons': ({official_report.get('excluded_reason'): 1} if official_report.get('excluded_reason') else {}),
+                }
+            return {
+                'included': official_report.get('included', True),
+                'excluded_reason': official_report.get('excluded_reason'),
+                'aggregate': aggregate,
+                'per_dimension': per_dimension,
+                'overall': official_report.get('overall', aggregate.get('overall')),
+                'task_count_valid': official_report.get('task_count_valid', 1 if official_report.get('included', True) else 0),
+                'turn_count_valid': official_report.get('turn_count_valid', aggregate.get('turn_count_valid', 0)),
+                'turn_count_total': official_report.get('turn_count_total', aggregate.get('total_turns', 0)),
+                'invalid_sample_summary': invalid_summary,
+            }
+
+        return {
+            'included': False,
+            'excluded_reason': fallback_reason,
+            'aggregate': {
+                'overall': None,
+                'turn_count_valid': 0,
+                'total_turns': 0,
+                'per_dimension': self._build_empty_official_per_dimension(),
+            },
+            'per_dimension': self._build_empty_official_per_dimension(),
+            'overall': None,
+            'task_count_valid': 0,
+            'turn_count_valid': 0,
+            'turn_count_total': 0,
+            'invalid_sample_summary': {
+                'invalid_task_count': 1,
+                'invalid_turn_count': 0,
+                'excluded_reasons': {fallback_reason: 1},
+            },
+        }
+
+    @staticmethod
+    def _merge_excluded_reason_counts(target: Dict[str, int], source: Optional[Dict[str, Any]]) -> None:
+        """Merge exclusion-reason counters into target."""
+        if not isinstance(source, dict):
+            return
+        for reason, count in source.items():
+            if reason is None:
+                continue
+            try:
+                target[reason] = target.get(reason, 0) + int(count)
+            except (TypeError, ValueError):
+                target[reason] = target.get(reason, 0) + 1
+
+    @staticmethod
+    def _infer_invalid_reason_category(reason: Optional[str]) -> str:
+        """Map task exclusion reasons into formal invalid-summary buckets."""
+        if not reason:
+            return 'missing_or_unknown'
+        if reason in {'invalid_due_to_delivery', 'confirmed_failed_delivery'} or 'invalid_due_to_delivery' in reason:
+            return 'invalid_due_to_delivery'
+        if reason in {'excluded_unverified_delivery', 'suspected_failed_delivery'} or 'unverified_delivery' in reason:
+            return 'excluded_unverified_delivery'
+        if reason == 'legacy_unverified' or 'legacy' in reason:
+            return 'legacy_unverified'
+        return reason
+
+    @staticmethod
+    def _safe_mean(values: List[float]) -> Optional[float]:
+        """Return the mean of non-empty numeric values."""
+        return sum(values) / len(values) if values else None
+
+    def _build_batch_invalid_summary(self, task_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate invalid/excluded task accounting for the official report."""
+        summary = {
+            'task_count_total': len(task_results),
+            'task_count_valid': 0,
+            'task_count_invalid_due_to_delivery': 0,
+            'task_count_excluded_unverified_delivery': 0,
+            'task_count_legacy_unverified': 0,
+            'task_count_missing_or_unknown': 0,
+            'invalid_task_count': 0,
+            'invalid_turn_count': 0,
+            'excluded_reasons': {},
+        }
+
+        for result in task_results:
+            official_report = self._extract_official_report(result, fallback_reason='missing_official_report')
+            if official_report.get('included'):
+                summary['task_count_valid'] += 1
+            else:
+                summary['invalid_task_count'] += 1
+                category = self._infer_invalid_reason_category(official_report.get('excluded_reason'))
+                counter_key = f'task_count_{category}'
+                summary[counter_key] = summary.get(counter_key, 0) + 1
+
+            invalid_sample_summary = official_report.get('invalid_sample_summary', {})
+            summary['invalid_turn_count'] += int(invalid_sample_summary.get('invalid_turn_count', 0) or 0)
+            self._merge_excluded_reason_counts(summary['excluded_reasons'], invalid_sample_summary.get('excluded_reasons'))
+
+        return summary
+
+    def _build_invalid_task_report(
+        self,
+        task: Dict[str, Any],
+        task_index: int,
+        invalid_reason: str,
+        schema: Optional[StateSchema] = None,
+    ) -> Dict[str, Any]:
+        """Build invalid/degraded task report before task execution."""
+        task_id = task.get('task_id', f'task_{task_index}')
+        task_type = task.get('task_type', 'unknown')
+        is_valid = not self.config.require_state_schema
+        state_summary = self._build_state_eval_summary(
+            task=task,
+            is_valid=is_valid,
+            invalid_reason=None if is_valid else invalid_reason,
+            schema=schema,
+            state_report={
+                'evaluator_state': {
+                    'status': 'degraded_legacy_mode' if is_valid else 'invalid',
+                    'variables_total': len(schema.variables) if schema else 0,
+                    'probing_variables_total': len(schema.probing_variables) if schema else 0,
+                },
+                'tracking_log': [{
+                    'event': 'task_init',
+                    'has_state_schema': schema is not None,
+                    'n_tracked_variables': len(schema.variables) if schema else 0,
+                    'registration_status': 'degraded_legacy_mode' if is_valid else 'invalid',
+                    'invalid_reason': invalid_reason,
+                }],
+            },
+        )
+
+        report = {
+            'task_id': task_id,
+            'task_type': task_type,
+            'task_index': task_index,
+            'completed': False,
+            'reason': invalid_reason,
+            'turns_used': 0,
+            'scores': {},
+            'runtime': {
+                'turn_evaluations': [],
+                'aggregate': {},
+                'consistency_check': {},
+            },
+            'official_report': {
+                'included': False,
+                'excluded_reason': invalid_reason,
+                'aggregate': {
+                    'overall': None,
+                    'turn_count_valid': 0,
+                    'total_turns': 0,
+                    'per_dimension': self._build_empty_official_per_dimension(),
+                },
+                'per_dimension': self._build_empty_official_per_dimension(),
+                'overall': None,
+                'task_count_valid': 0,
+                'turn_count_valid': 0,
+                'turn_count_total': 0,
+                'invalid_sample_summary': {
+                    'invalid_task_count': 1,
+                    'invalid_turn_count': 0,
+                    'excluded_reasons': {invalid_reason: 1},
+                },
+            },
+            'task_validity': {
+                'status': invalid_reason,
+                'reason': invalid_reason,
+                'invalid_turns': [],
+                'first_invalid_turn': None,
+                'evidence_sources': [],
+            },
+            'question': task.get('question', ''),
+            'expected_answer': task.get('answer', ''),
+            'images': task.get('images', []),
+            'has_reasoning_chain': 'reasoning_chain' in task,
+            'reasoning_chain': task.get('reasoning_chain', None),
+            'full_result': {},
+            'turns': [],
+            'conversation_history': [],
+        }
+        report.update(state_summary)
+        if is_valid:
+            report['state_eval_invalid_reason'] = None
+            report['state_eval_degraded'] = True
+        if 'state_report' in state_summary:
+            report['state_report'] = state_summary['state_report']
+        return report
 
     def _run_single_task_in_batch(
         self,
@@ -324,20 +622,72 @@ class BatchTaskSimulator:
 
         if max_turns_for_task < self.config.min_turns_per_task:
             # 轮数不够了，记录为未完成
-            return {
+            insufficient_report = {
                 'task_id': task_id,
                 'task_type': task_type,
                 'completed': False,
                 'reason': 'insufficient_turns',
                 'turns_used': 0,
-                'scores': {}
-            }, 0
+                'scores': {},
+                'runtime': {
+                    'turn_evaluations': [],
+                    'aggregate': {},
+                    'consistency_check': {},
+                },
+                'official_report': {
+                    'included': False,
+                    'excluded_reason': 'insufficient_turns',
+                    'aggregate': {
+                        'overall': None,
+                        'turn_count_valid': 0,
+                        'total_turns': 0,
+                        'per_dimension': self._build_empty_official_per_dimension(),
+                    },
+                    'per_dimension': self._build_empty_official_per_dimension(),
+                    'overall': None,
+                    'task_count_valid': 0,
+                    'turn_count_valid': 0,
+                    'turn_count_total': 0,
+                    'invalid_sample_summary': {
+                        'invalid_task_count': 1,
+                        'invalid_turn_count': 0,
+                        'excluded_reasons': {'insufficient_turns': 1},
+                    },
+                },
+                'task_validity': {
+                    'status': 'insufficient_turns',
+                    'reason': 'insufficient_turns',
+                    'invalid_turns': [],
+                    'first_invalid_turn': None,
+                    'evidence_sources': [],
+                },
+            }
+            return insufficient_report, 0
 
         try:
+            schema = None
+            if self.config.enable_stateful_runtime or self.config.require_state_schema:
+                schema_valid, invalid_reason, schema = self._validate_state_schema(task)
+                if not schema_valid:
+                    invalid_report = self._build_invalid_task_report(
+                        task=task,
+                        task_index=task_index,
+                        invalid_reason=invalid_reason,
+                        schema=schema,
+                    )
+                    if self.verbose:
+                        print(f"  任务跳过: {invalid_reason}")
+                    return invalid_report, 0
+
+            simulator_cls = StatefulStrategicSimulator if self.config.enable_stateful_runtime else StrategicSimulator
+            evaluator = self.evaluator
+            if self.config.enable_stateful_runtime and not isinstance(evaluator, StateAwareEvaluator):
+                evaluator = StateAwareEvaluator(mode=self.evaluator.mode)
+
             # 创建StrategicSimulator实例运行单个任务
-            simulator = StrategicSimulator(
+            simulator = simulator_cls(
                 llm_client=self.llm_client,
-                evaluator=self.evaluator,
+                evaluator=evaluator,
                 max_turns_per_task=max_turns_for_task,
                 min_turns_per_task=self.config.min_turns_per_task,
                 verbose=self.verbose,
@@ -361,6 +711,8 @@ class BatchTaskSimulator:
             # 提取分数
             scores_data = result.get('scores', {})
             aggregate_scores = scores_data.get('aggregate', {})
+            official_report = self._extract_official_report(result)
+            runtime_payload = result.get('runtime', {}) if isinstance(result.get('runtime'), dict) else {}
 
             # Task 1D: Capture conversation history from simulator
             turn_details = []
@@ -377,13 +729,16 @@ class BatchTaskSimulator:
                 'question': task.get('question', ''),
                 'expected_answer': task.get('answer', ''),
                 'images': task.get('images', []),
-                'scores': aggregate_scores if aggregate_scores else {
-                    'correctness': result.get('scores', {}).get('overall', 0.75),
-                    'faithfulness': 0.8,
-                    'robustness': 0.7,
-                    'consistency': 0.8,
-                    'memory_retention': 0.75,
-                },
+                'scores': aggregate_scores,
+                'runtime': runtime_payload,
+                'official_report': official_report,
+                'task_validity': result.get('task_validity', {
+                    'status': official_report.get('excluded_reason') if not official_report.get('included') else 'valid',
+                    'reason': official_report.get('excluded_reason'),
+                    'invalid_turns': [],
+                    'first_invalid_turn': None,
+                    'evidence_sources': [],
+                }),
                 'has_reasoning_chain': 'reasoning_chain' in task,
                 'reasoning_chain': task.get('reasoning_chain', None),
                 'full_result': result,  # 保存完整结果供后续分析
@@ -391,6 +746,35 @@ class BatchTaskSimulator:
                 'turns': turn_details,
                 'conversation_history': turn_details  # Alias for compatibility
             }
+
+            state_report = None
+            if hasattr(simulator, 'get_state_report'):
+                state_report = simulator.get_state_report()
+
+            state_invalid_reason = None
+            if self.config.enable_stateful_runtime or self.config.require_state_schema:
+                evaluator_state = (state_report or {}).get('evaluator_state', {})
+                tracking_log = (state_report or {}).get('tracking_log', [])
+                init_log = tracking_log[0] if tracking_log else {}
+                if not state_report:
+                    state_invalid_reason = 'missing_state_report'
+                elif evaluator_state.get('status') == 'no_schema_registered':
+                    state_invalid_reason = 'no_schema_registered'
+                elif not init_log.get('has_state_schema', False):
+                    state_invalid_reason = 'has_state_schema_false'
+                elif init_log.get('n_tracked_variables', 0) <= 0:
+                    state_invalid_reason = 'zero_tracked_variables'
+
+            state_summary = self._build_state_eval_summary(
+                task=task,
+                is_valid=state_invalid_reason is None,
+                invalid_reason=state_invalid_reason,
+                schema=schema,
+                state_report=state_report,
+            )
+            task_report.update(state_summary)
+            if state_report:
+                task_report['state_report'] = state_report
 
             # 保存详细的run_log
             self._save_task_run_log(simulator, task_id, turns_used)
@@ -405,8 +789,9 @@ class BatchTaskSimulator:
             })
 
             if self.verbose:
-                correctness_score = aggregate_scores.get('correctness', task_report['scores'].get('correctness', 0))
-                print(f"  任务完成: {turns_used} 轮, 分数: {correctness_score:.2f}")
+                correctness_score = (official_report.get('per_dimension', {}).get('correctness', {}) or {}).get('score')
+                correctness_display = f"{correctness_score:.2f}" if isinstance(correctness_score, (int, float)) else "n/a"
+                print(f"  任务完成: {turns_used} 轮, 正式correctness: {correctness_display}")
 
             return task_report, turns_used
 
@@ -421,7 +806,42 @@ class BatchTaskSimulator:
                 'completed': False,
                 'reason': str(e),
                 'turns_used': 0,
-                'scores': {}
+                'scores': {},
+                'runtime': {
+                    'turn_evaluations': [],
+                    'aggregate': {},
+                    'consistency_check': {},
+                },
+                'official_report': {
+                    'included': False,
+                    'excluded_reason': 'task_execution_error',
+                    'aggregate': {
+                        'overall': None,
+                        'turn_count_valid': 0,
+                        'total_turns': 0,
+                        'per_dimension': self._build_empty_official_per_dimension(),
+                    },
+                    'per_dimension': self._build_empty_official_per_dimension(),
+                    'overall': None,
+                    'task_count_valid': 0,
+                    'turn_count_valid': 0,
+                    'turn_count_total': 0,
+                    'invalid_sample_summary': {
+                        'invalid_task_count': 1,
+                        'invalid_turn_count': 0,
+                        'excluded_reasons': {
+                            'task_execution_error': 1,
+                            str(e): 1,
+                        },
+                    },
+                },
+                'task_validity': {
+                    'status': 'task_execution_error',
+                    'reason': str(e),
+                    'invalid_turns': [],
+                    'first_invalid_turn': None,
+                    'evidence_sources': [],
+                },
             }, 0
 
     def _generate_transition(
@@ -545,7 +965,7 @@ class BatchTaskSimulator:
     def _calculate_aggregate_scores(
         self,
         task_results: List[Dict[str, Any]]
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """
         计算聚合分数
 
@@ -556,40 +976,82 @@ class BatchTaskSimulator:
             聚合分数字典
         """
         if not task_results:
-            return {}
+            return {
+                'overall': None,
+                'task_count_valid': 0,
+                'task_count_total': 0,
+                'turn_count_valid': 0,
+                'turn_count_total': 0,
+                'per_dimension': self._build_empty_official_per_dimension(),
+                'invalid_sample_summary': self._build_batch_invalid_summary([]),
+            }
 
-        # 收集所有维度的分数
-        score_dimensions = [
-            'correctness', 'faithfulness', 'robustness',
-            'consistency', 'memory_retention'
-        ]
+        per_dimension_scores: Dict[str, List[float]] = {
+            dimension: [] for dimension in self.OFFICIAL_DIMENSIONS
+        }
+        per_dimension_support: Dict[str, int] = {
+            dimension: 0 for dimension in self.OFFICIAL_DIMENSIONS
+        }
+        task_count_valid = 0
+        turn_count_valid = 0
+        turn_count_total = 0
 
-        aggregate = {}
-        for dim in score_dimensions:
-            scores = []
-            for result in task_results:
-                if result.get('completed') and result.get('scores'):
-                    score = result['scores'].get(dim)
-                    if score is not None:
-                        scores.append(score)
+        for result in task_results:
+            official_report = self._extract_official_report(result, fallback_reason='missing_official_report')
+            aggregate = official_report.get('aggregate', {})
+            per_dimension = official_report.get('per_dimension', {})
+            turn_count_total += official_report.get('turn_count_total', aggregate.get('total_turns', 0)) or 0
 
-            if scores:
-                aggregate[dim] = sum(scores) / len(scores)
+            if not official_report.get('included'):
+                continue
 
-        # 添加跨任务记忆分数
+            task_count_valid += 1
+            turn_count_valid += official_report.get('turn_count_valid', aggregate.get('turn_count_valid', 0)) or 0
+
+            for dimension in self.OFFICIAL_DIMENSIONS:
+                report = per_dimension.get(dimension, {}) if isinstance(per_dimension, dict) else {}
+                score = report.get('score')
+                support = int(report.get('support', 0) or 0)
+                if score is not None and support > 0:
+                    per_dimension_scores[dimension].append(score)
+                    per_dimension_support[dimension] += support
+
+        per_dimension_payload = {}
+        for dimension in self.OFFICIAL_DIMENSIONS:
+            scores = per_dimension_scores[dimension]
+            support = per_dimension_support[dimension]
+            per_dimension_payload[dimension] = {
+                'score': self._safe_mean(scores),
+                'support': support,
+                'applicable': support > 0,
+                'reason': 'applicable_only_mean' if support > 0 else 'not_measured',
+            }
+
         if self.completed_tasks:
             memory_test_scores = [
-                test.get('score', 0)
+                test.get('score')
                 for test in getattr(self, '_memory_test_results', [])
+                if test.get('score') is not None
             ]
             if memory_test_scores:
-                aggregate['cross_task_memory'] = sum(memory_test_scores) / len(memory_test_scores)
+                per_dimension_payload['cross_task_memory'] = {
+                    'score': self._safe_mean(memory_test_scores),
+                    'support': len(memory_test_scores),
+                    'applicable': True,
+                    'reason': 'cross_task_memory_mean',
+                }
 
-        # 计算综合分数
-        if aggregate:
-            aggregate['overall'] = sum(aggregate.values()) / len(aggregate)
+        invalid_sample_summary = self._build_batch_invalid_summary(task_results)
 
-        return aggregate
+        return {
+            'overall': per_dimension_payload['overall']['score'],
+            'task_count_valid': task_count_valid,
+            'task_count_total': len(task_results),
+            'turn_count_valid': turn_count_valid,
+            'turn_count_total': turn_count_total,
+            'per_dimension': per_dimension_payload,
+            'invalid_sample_summary': invalid_sample_summary,
+        }
 
     def _save_task_run_log(
         self,

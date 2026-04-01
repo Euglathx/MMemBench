@@ -1,0 +1,101 @@
+{
+  "group_id": "I",
+  "group_name": "Turn-Level & Truth Validation Tests",
+  "status": "PASS",
+  "timestamp": "2026-02-04T19:20:03.690875",
+  "task_3_3": {
+    "test_id": "3.3",
+    "test_name": "Turn-Level Ground Truth Coverage Test",
+    "status": "PASS",
+    "metrics": {
+      "turn_level_coverage": {
+        "value": 1.0,
+        "threshold": 1.0,
+        "pass": true,
+        "detail": "13/13 tests passed"
+      },
+      "expected_answer_alignment": {
+        "value": 1.0,
+        "threshold": 1.0,
+        "pass": true,
+        "detail": "All expected answers align with turn questions"
+      },
+      "task_level_misuse_rate": {
+        "value": 0.0,
+        "threshold": 0.0,
+        "pass": true,
+        "detail": "0 intermediate turns use task-level answer"
+      }
+    },
+    "overall_pass": true,
+    "failure_reasons": [],
+    "evidence": {
+      "failed_cases": [],
+      "sample_logs": [],
+      "total_turns_analyzed": 264,
+      "intermediate_turns": 71,
+      "final_turns": 71
+    },
+    "timestamp": "2026-02-04T19:20:03.690875"
+  },
+  "task_3_4": {
+    "test_id": "3.4",
+    "test_name": "Simulator Truth Consistency Test",
+    "status": "PASS",
+    "metrics": {
+      "false_confirmation_rate": {
+        "value": 0.0,
+        "threshold": 0.0,
+        "pass": true,
+        "detail": "0/10 wrong responses were falsely confirmed"
+      },
+      "error_propagation_rate": {
+        "value": 0.0,
+        "threshold": 0.05,
+        "pass": true,
+        "detail": "0.00% errors propagated to subsequent turns"
+      },
+      "ground_truth_consistency_check": {
+        "value": 1.0,
+        "threshold": 1.0,
+        "pass": true,
+        "detail": "100.00% consistency checks based on ground truth"
+      }
+    },
+    "overall_pass": true,
+    "failure_reasons": [],
+    "evidence": {
+      "false_confirmation_cases": [],
+      "error_propagation_cases": [],
+      "sample_logs": [],
+      "deliberately_wrong_responses_tested": 10,
+      "consistency_check_samples": [
+        {
+          "type": "reformulated_question",
+          "original": "Test question 0?",
+          "consistency_question": "回到最初的问题: Test question 0?"
+        },
+        {
+          "type": "reformulated_question",
+          "original": "Test question 1?",
+          "consistency_question": "回到最初的问题: Test question 1?"
+        },
+        {
+          "type": "reformulated_question",
+          "original": "Test question 2?",
+          "consistency_question": "One more time: Test question 2?"
+        }
+      ],
+      "memory_filtering_tests": {
+        "total_turns": 10,
+        "error_turns": 4,
+        "errors_leaked_through_filter": 0,
+        "filter_reason": "is_correct=False or score<0.5"
+      }
+    },
+    "timestamp": "2026-02-04T19:20:03.708527"
+  },
+  "overall_pass": true,
+  "execution_time_seconds": 0.02619,
+  "failure_summary": []
+}

@@ -1,0 +1,250 @@
+{
+  "test_id": "3.2",
+  "test_name": "Score Formula Correctness Test",
+  "status": "PASS",
+  "metrics": {
+    "hard_scores_neutral": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "detail": "Source defaults are 0.5, non-adjusted dims remain neutral"
+    },
+    "level_threshold_correct": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "detail": "Level threshold 0.7 applied correctly"
+    },
+    "llm_judge_weight_correct": {
+      "value": 0.8,
+      "threshold": 0.8,
+      "pass": true,
+      "detail": "LLM Judge weight set to 0.8"
+    },
+    "low_score_threshold": {
+      "value": 0.33999999999999997,
+      "threshold": 0.4,
+      "pass": true,
+      "detail": "LLM 3/10 → final 0.340 (expected <= 0.4)"
+    },
+    "calculation_error_rate": {
+      "value": 1.1102230246251565e-16,
+      "threshold": 0.05,
+      "pass": true,
+      "detail": "Max calculation error: 0.00%"
+    },
+    "perfect_score_threshold": {
+      "value": 0.9,
+      "threshold": 0.9,
+      "pass": true,
+      "detail": "LLM 10/10 → final 0.900 (expected >= 0.9)"
+    }
+  },
+  "overall_pass": true,
+  "failure_reasons": [],
+  "evidence": {
+    "formula_config": {
+      "hard_scores_default": 0.5,
+      "actual_hard_scores": {
+        "correctness": 0.5,
+        "faithfulness": 0.5,
+        "robustness": 0.5,
+        "consistency": 0.5,
+        "memory_retention": 0.5,
+        "cross_image_confusion": 0.5,
+        "disambiguation": 0.5
+      },
+      "source_has_neutral_defaults": true,
+      "llm_judge_weight": 0.8
+    },
+    "anomaly_cases_fixed": [
+      {
+        "case_id": "abr_example_001",
+        "llm_score": "10/10",
+        "old_final": 0.664,
+        "new_final": 0.9,
+        "old_pass": false,
+        "new_pass": true,
+        "status": "FIXED"
+      },
+      {
+        "case_id": "ac_mscoco_001",
+        "llm_score": "10/10",
+        "old_final": 0.68,
+        "new_final": 0.86,
+        "old_pass": false,
+        "new_pass": true,
+        "status": "FIXED"
+      },
+      {
+        "case_id": "task_003",
+        "llm_score": "9/10",
+        "old_final": 0.68,
+        "new_final": 0.82,
+        "old_pass": false,
+        "new_pass": true,
+        "status": "FIXED"
+      },
+      {
+        "case_id": "task_004",
+        "llm_score": "9/10",
+        "old_final": 0.69,
+        "new_final": 0.82,
+        "old_pass": false,
+        "new_pass": true,
+        "status": "FIXED"
+      },
+      {
+        "case_id": "task_005",
+        "llm_score": "10/10",
+        "old_final": 0.65,
+        "new_final": 0.86,
+        "old_pass": false,
+        "new_pass": true,
+        "status": "FIXED"
+      }
+    ],
+    "test_calculations": [
+      {
+        "case": "low_llm_score",
+        "llm_scores": {
+          "correctness": 0.3,
+          "faithfulness": 0.3,
+          "robustness": 0.3,
+          "consistency": 0.3,
+          "memory_retention": 0.3,
+          "cross_image_confusion": 0.3,
+          "disambiguation": 0.3
+        },
+        "hard_scores": {
+          "correctness": 0.5,
+          "faithfulness": 0.5,
+          "robustness": 0.5,
+          "consistency": 0.5,
+          "memory_retention": 0.5,
+          "cross_image_confusion": 0.5,
+          "disambiguation": 0.5
+        },
+        "final_scores": {
+          "correctness": 0.33999999999999997,
+          "faithfulness": 0.33999999999999997,
+          "robustness": 0.33999999999999997,
+          "consistency": 0.33999999999999997,
+          "memory_retention": 0.33999999999999997,
+          "cross_image_confusion": 0.33999999999999997,
+          "disambiguation": 0.33999999999999997
+        },
+        "expected": 0.34
+      },
+      {
+        "case": "mixed_scores",
+        "test_cases": [
+          {
+            "llm": 0.9,
+            "hard": 0.5,
+            "expected": 0.82
+          },
+          {
+            "llm": 0.8,
+            "hard": 0.5,
+            "expected": 0.74
+          },
+          {
+            "llm": 0.7,
+            "hard": 0.5,
+            "expected": 0.66
+          },
+          {
+            "llm": 0.5,
+            "hard": 0.5,
+            "expected": 0.5
+          },
+          {
+            "llm": 0.2,
+            "hard": 0.5,
+            "expected": 0.26
+          }
+        ],
+        "max_error": 1.1102230246251565e-16,
+        "errors": []
+      },
+      {
+        "case": "perfect_llm_score",
+        "llm_scores": {
+          "correctness": 1.0,
+          "faithfulness": 1.0,
+          "robustness": 1.0,
+          "consistency": 1.0,
+          "memory_retention": 1.0,
+          "cross_image_confusion": 1.0,
+          "disambiguation": 1.0
+        },
+        "hard_scores": {
+          "correctness": 0.5,
+          "faithfulness": 0.5,
+          "robustness": 0.5,
+          "consistency": 0.5,
+          "memory_retention": 0.5,
+          "cross_image_confusion": 0.5,
+          "disambiguation": 0.5
+        },
+        "final_scores": {
+          "correctness": 0.9,
+          "faithfulness": 0.9,
+          "robustness": 0.9,
+          "consistency": 0.9,
+          "memory_retention": 0.9,
+          "cross_image_confusion": 0.9,
+          "disambiguation": 0.9
+        },
+        "expected": 0.9
+      }
+    ],
+    "timestamp": "2026-02-04T19:20:29.123227",
+    "level_threshold_tests": {
+      "threshold": 0.7,
+      "test_cases": [
+        {
+          "score": 0.9,
+          "expected_pass": true
+        },
+        {
+          "score": 0.8,
+          "expected_pass": true
+        },
+        {
+          "score": 0.7,
+          "expected_pass": true
+        },
+        {
+          "score": 0.69,
+          "expected_pass": false
+        },
+        {
+          "score": 0.5,
+          "expected_pass": false
+        }
+      ],
+      "all_correct": true,
+      "failures": []
+    },
+    "configuration_comparison": {
+      "old_config": {
+        "llm_weight": 0.6,
+        "hard_default": 0.1,
+        "perfect_llm_final": 0.64,
+        "would_pass_0.7": false
+      },
+      "new_config": {
+        "llm_weight": 0.8,
+        "hard_default": 0.5,
+        "perfect_llm_final": 0.9,
+        "would_pass_0.7": true
+      },
+      "improvement": 0.26
+    },
+    "tests_run": 9,
+    "failures": 0,
+    "errors": 0
+  }
+}

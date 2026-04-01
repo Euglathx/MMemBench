@@ -1,0 +1,48 @@
+{
+  "test_id": "3.5",
+  "test_name": "Multi-Image Task End-to-End Test",
+  "status": "PASS",
+  "metrics": {
+    "ac_task_consistency": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "detail": "AC task consistency: 100%"
+    },
+    "images_question_alignment": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "detail": "Images-question alignment: 18/18 tests passed"
+    },
+    "evaluator_image_awareness": {
+      "value": 1.0,
+      "threshold": 1.0,
+      "pass": true,
+      "detail": "Evaluator image awareness: 18/18 tests passed"
+    }
+  },
+  "overall_pass": true,
+  "failure_reasons": [],
+  "evidence": {
+    "single_image_tests": [],
+    "multi_image_tests": [],
+    "progressive_tests": [],
+    "e2e_tests": [],
+    "strategy_usage": {
+      "SEND_ALL_EVERY_TURN": "tested",
+      "PROGRESSIVE": "tested",
+      "SEND_ALL_FIRST_TURN": "tested",
+      "ACTION_DEPENDENT": "tested"
+    },
+    "tests_run": 18,
+    "tests_passed": 18,
+    "tests_failed": 0,
+    "tests_errors": 0,
+    "policy_consistency": {
+      "strategic_simulator": "uses ImagePolicyManager",
+      "llm_user_simulator": "uses ImagePolicyManager",
+      "consistent": true
+    }
+  }
+}
