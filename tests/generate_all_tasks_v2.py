@@ -27,7 +27,8 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 # Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from dataprovider import DataLoader, DataGeneratorV2, load_config, ConfigLoader
 
@@ -37,6 +38,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def resolve_repo_path(path_like: str) -> Path:
+    """Resolve a repository-relative path into an absolute path."""
+    path = Path(path_like)
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 # 默认数据集split配置
@@ -111,7 +118,7 @@ def load_generation_config(
 
 def find_next_run_number(base_dir="generated_tasks_v2"):
     """找到下一个可用的 run 编号"""
-    base_path = Path(base_dir)
+    base_path = resolve_repo_path(base_dir)
     base_path.mkdir(exist_ok=True)
 
     existing_runs = [d for d in base_path.iterdir()
@@ -134,7 +141,7 @@ def find_next_run_number(base_dir="generated_tasks_v2"):
 def setup_output_directory(base_dir="generated_tasks_v2"):
     """创建输出目录结构"""
     run_number = find_next_run_number(base_dir)
-    run_dir = Path(base_dir) / f"run_{run_number}"
+    run_dir = resolve_repo_path(base_dir) / f"run_{run_number}"
 
     # 创建子目录
     (run_dir / "tasks").mkdir(parents=True, exist_ok=True)
@@ -398,19 +405,19 @@ def parse_args():
         epilog="""
 示例:
   # 使用默认配置生成所有已启用数据集的任务
-  python generate_all_tasks_v2.py
+  python tests/generate_all_tasks_v2.py
 
   # 只为特定数据集生成任务
-  python generate_all_tasks_v2.py --datasets mscoco14 vcr visual_genome
+  python tests/generate_all_tasks_v2.py --datasets mscoco14 vcr visual_genome
 
   # 自定义样本数量
-  python generate_all_tasks_v2.py --num-samples 20
+  python tests/generate_all_tasks_v2.py --num-samples 20
 
   # 指定数据split
-  python generate_all_tasks_v2.py --split val
+  python tests/generate_all_tasks_v2.py --split val
 
   # 组合使用
-  python generate_all_tasks_v2.py --datasets gqa sherlock --num-samples 15 --split train
+  python tests/generate_all_tasks_v2.py --datasets gqa sherlock --num-samples 15 --split train
         """
     )
 
@@ -461,7 +468,9 @@ def main():
     print("\n" + "="*80 + "\n")
 
     # 设置输出目录
-    run_dir, run_number = setup_output_directory(args.output_dir)
+    config_file = resolve_repo_path(args.config_file)
+    output_dir = resolve_repo_path(args.output_dir)
+    run_dir, run_number = setup_output_directory(output_dir)
     print(f"📁 输出目录: {run_dir}")
     print(f"🔢 运行编号: {run_number}\n")
 
@@ -477,7 +486,7 @@ def main():
     try:
         # 加载配置
         logger.info("加载配置文件...")
-        config = load_config(args.config_file)
+        config = load_config(str(config_file))
 
         # 验证数据集路径
         logger.info("验证数据集路径...")
@@ -508,7 +517,7 @@ def main():
         # 初始化生成器
         logger.info("初始化数据生成器...")
         loader = DataLoader(data_root=args.data_root)
-        generator = DataGeneratorV2(loader, config_file=args.config_file)
+        generator = DataGeneratorV2(loader, config_file=str(config_file))
 
         # 生成任务
         all_results = {}

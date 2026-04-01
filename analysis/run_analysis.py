@@ -2,19 +2,24 @@
 M3Bench 实验分析主入口脚本
 
 用法:
-    python run_analysis.py --log-dir simulator_test_log/batch_run_20260205_104458 --model-name "Test Model"
+    python analysis/run_analysis.py --log-dir simulator_test_log/batch_run_20260205_104458 --model-name "Test Model"
 """
 
+import sys
 import argparse
 import logging
 import json
 from pathlib import Path
 from datetime import datetime
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from analysis import (
     parse_log_directory,
     ResultAggregator,
-    ExperimentVisualizer
+    ExperimentVisualizer,
+    VISUALIZER_IMPORT_ERROR,
 )
 
 logging.basicConfig(
@@ -58,27 +63,32 @@ def main():
     )
 
     args = parser.parse_args()
+    log_dir = Path(args.log_dir)
+    if not log_dir.is_absolute():
+        log_dir = PROJECT_ROOT / log_dir
 
     # 设置输出目录
     if args.output_dir is None:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_dir = Path(f'experiment_results/{timestamp}')
+        output_dir = PROJECT_ROOT / "experiment_results" / timestamp
     else:
         output_dir = Path(args.output_dir)
+        if not output_dir.is_absolute():
+            output_dir = PROJECT_ROOT / output_dir
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("="*80)
     logger.info("M3Bench 实验分析工具")
     logger.info("="*80)
-    logger.info(f"日志目录: {args.log_dir}")
+    logger.info(f"日志目录: {log_dir}")
     logger.info(f"模型名称: {args.model_name}")
     logger.info(f"输出目录: {output_dir}")
     logger.info("")
 
     # Step 1: 解析日志
     logger.info("Step 1: 解析日志文件...")
-    parsed_logs = parse_log_directory(args.log_dir)
+    parsed_logs = parse_log_directory(str(log_dir))
     if not parsed_logs:
         logger.error("没有成功解析任何日志文件！")
         return 1
@@ -107,17 +117,21 @@ def main():
     logger.info(f"  低分Turn数: {len(results.error_distribution.low_score_turns)}")
 
     # Step 3: 生成可视化
+    outputs = {}
     logger.info("\nStep 3: 生成可视化...")
-    visualizer = ExperimentVisualizer(output_dir=str(output_dir / 'visualizations'))
+    if ExperimentVisualizer is None:
+        logger.warning(f"跳过可视化生成: {VISUALIZER_IMPORT_ERROR}")
+    else:
+        visualizer = ExperimentVisualizer(output_dir=str(output_dir / 'visualizations'))
 
-    outputs = visualizer.generate_all_visualizations(
-        {args.model_name: results},
-        output_dir=str(output_dir / 'visualizations')
-    )
+        outputs = visualizer.generate_all_visualizations(
+            {args.model_name: results},
+            output_dir=str(output_dir / 'visualizations')
+        )
 
-    logger.info("\n生成的可视化文件:")
-    for name, path in outputs.items():
-        logger.info(f"  {name}: {path}")
+        logger.info("\n生成的可视化文件:")
+        for name, path in outputs.items():
+            logger.info(f"  {name}: {path}")
 
     # 生成文本报告
     report_path = output_dir / 'analysis_report.txt'

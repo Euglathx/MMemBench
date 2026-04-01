@@ -6,6 +6,10 @@ M3Bench 是一个用于评估视觉语言模型（VLM）记忆机制的推理与
 
 ```
 M3Bench_new/
+├── analysis/               # 分析与实验脚本
+│   ├── run_analysis.py
+│   ├── run_experiment.py
+│   └── analyze_existing_logs.py
 ├── dataprovider/           # 数据加载与任务生成
 │   ├── loader.py           # 数据集加载器
 │   ├── generator_v2.py     # V2 任务生成器（配置驱动）
@@ -20,6 +24,9 @@ M3Bench_new/
 │       ├── action_space.py         # 动作空间定义
 │       └── context_padder.py       # 长上下文支持
 ├── tests/                  # 测试套件
+│   ├── generate_all_tasks_v2.py
+│   ├── run_batch_test.py
+│   ├── run_interleaved_test.py
 │   ├── test_dataprovider.py
 │   ├── test_strategic_simulator.py
 │   └── test_user_simulator.py
@@ -54,7 +61,7 @@ M3Bench_new/
 ### 1. 生成测试任务（V2 配置驱动）
 
 ```bash
-python generate_all_tasks_v2.py
+python tests/generate_all_tasks_v2.py
 ```
 
 生成的任务保存在 `generated_tasks_v2/` 目录下，包含：
@@ -78,7 +85,7 @@ python tests/test_strategic_simulator.py
 ### 3. 运行实验
 
 ```bash
-python run_experiment.py
+python analysis/run_experiment.py
 ```
 
 运行完整的实验流程，包括：
@@ -86,12 +93,6 @@ python run_experiment.py
 - 多轮对话测试
 - 评估指标计算
 - 结果可视化
-
-### 4. 查看生成的任务
-
-```bash
-python view_tasks.py
-```
 
 ## 核心功能
 

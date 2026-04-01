@@ -6,9 +6,9 @@ Loads 3 tasks (1 VNF + 1 RC + 1 AC) from run_76, runs them through
 the new InterleavedBatchSimulator in round-robin mode.
 
 Usage:
-    python run_interleaved_test.py
-    python run_interleaved_test.py --strategy interleaved
-    python run_interleaved_test.py --serial   # fallback to original BatchTaskSimulator behavior
+    python tests/run_interleaved_test.py
+    python tests/run_interleaved_test.py --strategy interleaved
+    python tests/run_interleaved_test.py --serial   # fallback to original BatchTaskSimulator behavior
 """
 
 import sys
@@ -18,7 +18,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-sys.path.insert(0, str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulator import (
     LLMClient,
@@ -33,7 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-RUN_DIR = Path("generated_tasks_v2/run_76")
+RUN_DIR = PROJECT_ROOT / "generated_tasks_v2" / "run_76"
 
 
 def load_one_task(jsonl_path: Path) -> dict:
@@ -122,7 +123,7 @@ def main():
     result = sim.run_batch(tasks)
 
     # --- Save results ---
-    output_dir = Path("interleaved_test_results")
+    output_dir = PROJECT_ROOT / "interleaved_test_results"
     output_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"result_{ts}.json"

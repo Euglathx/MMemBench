@@ -4,7 +4,12 @@ M3Bench Analysis Module
 
 from .log_parser import LogParser, parse_log_directory
 from .result_aggregator import ResultAggregator
-from .visualizer import ExperimentVisualizer
+try:
+    from .visualizer import ExperimentVisualizer
+    VISUALIZER_IMPORT_ERROR = None
+except Exception as exc:
+    ExperimentVisualizer = None
+    VISUALIZER_IMPORT_ERROR = exc
 from .data_structures import (
     ParsedLog,
     TaskMetadata,
@@ -40,5 +45,6 @@ __all__ = [
     'LagAnalysis',
     'ErrorDistribution',
     'TaskAnalysis',
-    'ModelResults'
+    'ModelResults',
+    'VISUALIZER_IMPORT_ERROR',
 ]

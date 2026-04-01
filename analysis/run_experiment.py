@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 import random
 
 # Add project root to path
-project_root = Path(__file__).parent
+project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 # Import required modules
@@ -97,7 +97,8 @@ class ExperimentRunner:
     def __init__(self, config: ExperimentConfig):
         self.config = config
         self.results: List[TaskResult] = []
-        self.output_dir = Path(config.output_dir)
+        output_dir = Path(config.output_dir)
+        self.output_dir = output_dir if output_dir.is_absolute() else project_root / output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Sample tasks for experiments

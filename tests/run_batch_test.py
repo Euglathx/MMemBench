@@ -18,13 +18,15 @@
 import sys
 import json
 import argparse
+import glob
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
 
 # Add project root
-sys.path.insert(0, str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulator import (
     BatchTaskSimulator,
@@ -56,10 +58,13 @@ def load_tasks_from_files(task_files: List[str], max_tasks: int = None) -> List[
 
     for file_pattern in task_files:
         # 处理glob模式
-        if '*' in file_pattern:
-            matching_files = list(Path().glob(file_pattern))
+        pattern_path = Path(file_pattern)
+        if any(ch in file_pattern for ch in "*?[]"):
+            pattern = str(pattern_path if pattern_path.is_absolute() else PROJECT_ROOT / pattern_path)
+            matching_files = [Path(p) for p in glob.glob(pattern, recursive=True)]
         else:
-            matching_files = [Path(file_pattern)]
+            resolved_path = pattern_path if pattern_path.is_absolute() else PROJECT_ROOT / pattern_path
+            matching_files = [resolved_path]
 
         for file_path in matching_files:
             if not file_path.exists():
@@ -109,16 +114,16 @@ def parse_args():
         epilog="""
 示例:
   # 使用默认任务文件运行批处理测试
-  python run_batch_test.py
+  python tests/run_batch_test.py
 
   # 自定义批次大小和数量
-  python run_batch_test.py --tasks-per-batch 4 --num-batches 5
+  python tests/run_batch_test.py --tasks-per-batch 4 --num-batches 5
 
   # 指定任务文件
-  python run_batch_test.py --task-files generated_tasks_v2/run_1/tasks/*.jsonl
+  python tests/run_batch_test.py --task-files generated_tasks_v2/run_1/tasks/*.jsonl
 
   # 调整轮数限制
-  python run_batch_test.py --max-turns-per-session 60 --min-turns-per-task 10
+  python tests/run_batch_test.py --max-turns-per-session 60 --min-turns-per-task 10
         """
     )
 
@@ -215,6 +220,8 @@ def main():
 
     # 创建输出目录
     output_dir = Path(args.output_dir)
+    if not output_dir.is_absolute():
+        output_dir = PROJECT_ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 加载任务
@@ -223,7 +230,7 @@ def main():
     if not tasks:
         logger.error("没有加载到任何任务!")
         print("\n错误: 没有找到任务文件")
-        print("请先运行 generate_all_tasks_v2.py 生成任务")
+        print("请先运行 tests/generate_all_tasks_v2.py 生成任务")
         return 1
 
     # 分批

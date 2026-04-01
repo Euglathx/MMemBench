@@ -25,7 +25,7 @@ echo ""
 # Step 1: Generate offline tasks (if needed)
 if [ ! -d "$TASK_DIR" ]; then
     echo "[Step 1] Generating offline tasks..."
-    python generate_all_tasks_v2.py --num-samples 100
+    python tests/generate_all_tasks_v2.py --num-samples 100
     echo ""
 else
     echo "[Step 1] Task directory exists, skipping generation"

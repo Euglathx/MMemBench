@@ -7,16 +7,17 @@ import sys
 from pathlib import Path
 
 # Add project root
-sys.path.insert(0, str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from analysis.log_parser import LogParser
 from analysis.result_aggregator import ResultAggregator
-from analysis.visualizer import ExperimentVisualizer
+from analysis import ExperimentVisualizer, VISUALIZER_IMPORT_ERROR
 
 
 def analyze_existing_logs():
     """分析已有的日志文件"""
-    log_base = Path("simulator_test_log")
+    log_base = PROJECT_ROOT / "simulator_test_log"
 
     # 找到 batch_run_20260205_104458 目录
     target_dir = log_base / "batch_run_20260205_104458"
@@ -82,36 +83,39 @@ def analyze_existing_logs():
         print()
 
         # 生成可视化
-        output_dir = Path(f"experiment_results/models/{model_name}")
+        output_dir = PROJECT_ROOT / "experiment_results" / "models" / model_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        visualizer = ExperimentVisualizer(aggregated, output_dir)
+        if ExperimentVisualizer is None:
+            print(f"⚠ 跳过图表生成，当前可视化依赖不可用: {VISUALIZER_IMPORT_ERROR}\n")
+        else:
+            visualizer = ExperimentVisualizer(aggregated, output_dir)
 
-        try:
-            visualizer.plot_radar_chart()
-            print(f"  ✓ 雷达图")
+            try:
+                visualizer.plot_radar_chart()
+                print(f"  ✓ 雷达图")
 
-            visualizer.plot_bar_chart()
-            print(f"  ✓ 柱状图")
+                visualizer.plot_bar_chart()
+                print(f"  ✓ 柱状图")
 
-            visualizer.plot_turn_progression()
-            print(f"  ✓ 折线图")
+                visualizer.plot_turn_progression()
+                print(f"  ✓ 折线图")
 
-            visualizer.plot_lag_analysis()
-            print(f"  ✓ Lag分析图")
+                visualizer.plot_lag_analysis()
+                print(f"  ✓ Lag分析图")
 
-            visualizer.plot_error_distribution()
-            print(f"  ✓ 错误分布图")
+                visualizer.plot_error_distribution()
+                print(f"  ✓ 错误分布图")
 
-            visualizer.plot_comparison_table()
-            print(f"  ✓ 对比表格")
+                visualizer.plot_comparison_table()
+                print(f"  ✓ 对比表格")
 
-            print(f"\n✓ {model_name} 的所有图表已生成到: {output_dir}\n")
+                print(f"\n✓ {model_name} 的所有图表已生成到: {output_dir}\n")
 
-        except Exception as e:
-            print(f"❌ 生成图表失败: {e}\n")
-            import traceback
-            traceback.print_exc()
+            except Exception as e:
+                print(f"❌ 生成图表失败: {e}\n")
+                import traceback
+                traceback.print_exc()
 
     # 生成多模型对比
     print("\n" + "="*80)
@@ -127,7 +131,11 @@ def analyze_existing_logs():
         # 使用multi_model_comparison脚本
         print("✓ 多个模型数据已收集")
         print("模型列表:", list(all_aggregated.keys()))
-        print("\n运行: python run_multi_model_comparison.py")
+        comparison_script = PROJECT_ROOT / "analysis" / "run_multi_model_comparison.py"
+        if comparison_script.exists():
+            print(f"\n运行: python {comparison_script.relative_to(PROJECT_ROOT).as_posix()}")
+        else:
+            print("\n⚠ 未找到 analysis/run_multi_model_comparison.py，跳过多模型对比入口提示")
     else:
         print(f"⚠ 只有 {len(all_aggregated)} 个模型，无法生成多模型对比")
         print("需要至少2个模型的数据")

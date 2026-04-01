@@ -11,12 +11,14 @@
 import sys
 import json
 import argparse
+import glob
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
 
-sys.path.insert(0, str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.simulator import (
     BatchTaskSimulator,
@@ -38,10 +40,13 @@ def load_tasks_from_files(task_files: List[str], max_tasks: int = None) -> List[
     all_tasks = []
 
     for file_pattern in task_files:
-        if '*' in file_pattern:
-            matching_files = list(Path().glob(file_pattern))
+        pattern_path = Path(file_pattern)
+        if any(ch in file_pattern for ch in "*?[]"):
+            pattern = str(pattern_path if pattern_path.is_absolute() else PROJECT_ROOT / pattern_path)
+            matching_files = [Path(p) for p in glob.glob(pattern, recursive=True)]
         else:
-            matching_files = [Path(file_pattern)]
+            resolved_path = pattern_path if pattern_path.is_absolute() else PROJECT_ROOT / pattern_path
+            matching_files = [resolved_path]
 
         for file_path in matching_files:
             if not file_path.exists():
@@ -94,7 +99,7 @@ def run_model_tests(model_name: str, model_api_name: str = None,
     logger.info("="*80)
 
     # 加载任务
-    task_files = list(Path('generated_tasks_v2/run_18/tasks').glob('*.jsonl'))
+    task_files = list((PROJECT_ROOT / 'generated_tasks_v2' / 'run_18' / 'tasks').glob('*.jsonl'))
     all_tasks = load_tasks_from_files([str(f) for f in task_files], max_tasks=None)
 
     if not all_tasks:
@@ -114,7 +119,7 @@ def run_model_tests(model_name: str, model_api_name: str = None,
 
     # 创建输出目录
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = Path(f'simulator_test_log/batch_run_{model_name}_{timestamp}')
+    output_dir = PROJECT_ROOT / 'simulator_test_log' / f'batch_run_{model_name}_{timestamp}'
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 初始化组件
@@ -211,13 +216,13 @@ def main():
         epilog="""
 示例:
   # 为所有4个模型运行测试
-  python run_batch_test_multi_model.py
+  python tests/run_batch_test_multi_model.py
 
   # 只测试特定模型
-  python run_batch_test_multi_model.py --models gpt-5 gemini-2.5-pro
+  python tests/run_batch_test_multi_model.py --models gpt-5 gemini-2.5-pro
 
   # 自定义参数
-  python run_batch_test_multi_model.py --tasks-per-batch 3 --num-batches 10 --max-turns 40
+  python tests/run_batch_test_multi_model.py --tasks-per-batch 3 --num-batches 10 --max-turns 40
         """
     )
 

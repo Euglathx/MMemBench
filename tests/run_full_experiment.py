@@ -10,6 +10,10 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TESTS_DIR = PROJECT_ROOT / "tests"
+ANALYSIS_DIR = PROJECT_ROOT / "analysis"
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -23,7 +27,7 @@ def run_model_test(model_name, num_batches=5, tasks_per_batch=4, max_turns=35):
     # 构建命令
     cmd = [
         sys.executable,
-        "run_batch_test.py",
+        str(TESTS_DIR / "run_batch_test.py"),
         "--task-files", "generated_tasks_v2/run_18/tasks/*.jsonl",
         "--tasks-per-batch", str(tasks_per_batch),
         "--num-batches", str(num_batches),
@@ -38,7 +42,7 @@ def run_model_test(model_name, num_batches=5, tasks_per_batch=4, max_turns=35):
     try:
         result = subprocess.run(
             cmd,
-            cwd=Path(__file__).parent,
+            cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
             timeout=1800  # 30分钟超时
@@ -63,7 +67,7 @@ def run_model_test(model_name, num_batches=5, tasks_per_batch=4, max_turns=35):
 
 def modify_llm_client_model(model_name):
     """修改llm_client.py中的目标模型"""
-    llm_client_path = Path("src/simulator/llm_client.py")
+    llm_client_path = PROJECT_ROOT / "src" / "simulator" / "llm_client.py"
 
     logger.info(f"修改目标模型为: {model_name}")
 
@@ -93,7 +97,7 @@ def modify_llm_client_model(model_name):
 
 def find_latest_log_dir(model_name):
     """查找最新的日志目录"""
-    log_base = Path("simulator_test_log")
+    log_base = PROJECT_ROOT / "simulator_test_log"
 
     # 查找所有非mock的batch_run目录
     pattern = f"batch_run_*"
@@ -118,14 +122,14 @@ def run_analysis(model_name, log_dir):
     logger.info(f"分析模型: {model_name}")
     logger.info(f"{'='*80}")
 
-    output_dir = f"experiment_results/models/{model_name}"
+    output_dir = PROJECT_ROOT / "experiment_results" / "models" / model_name
 
     cmd = [
         sys.executable,
-        "run_analysis.py",
+        str(ANALYSIS_DIR / "run_analysis.py"),
         "--log-dir", log_dir,
         "--model-name", model_name,
-        "--output-dir", output_dir
+        "--output-dir", str(output_dir)
     ]
 
     logger.info(f"执行命令: {' '.join(cmd)}")
@@ -133,7 +137,7 @@ def run_analysis(model_name, log_dir):
     try:
         result = subprocess.run(
             cmd,
-            cwd=Path(__file__).parent,
+            cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
             timeout=300  # 5分钟超时
@@ -158,12 +162,17 @@ def generate_comparison():
     logger.info("生成多模型对比图表")
     logger.info(f"{'='*80}")
 
-    cmd = [sys.executable, "run_multi_model_comparison.py"]
+    comparison_script = ANALYSIS_DIR / "run_multi_model_comparison.py"
+    if not comparison_script.exists():
+        logger.warning("未找到 analysis/run_multi_model_comparison.py，跳过多模型对比生成")
+        return None
+
+    cmd = [sys.executable, str(comparison_script)]
 
     try:
         result = subprocess.run(
             cmd,
-            cwd=Path(__file__).parent,
+            cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
             timeout=300
@@ -264,7 +273,7 @@ def main():
     logger.info("\n阶段 3/3: 生成多模型对比")
     logger.info("-" * 80 + "\n")
 
-    success = generate_comparison()
+    comparison_success = generate_comparison()
 
     # 最终总结
     logger.info("\n" + "="*80)
@@ -275,7 +284,7 @@ def main():
     for model_name, output_dir in analysis_results.items():
         logger.info(f"  ✓ {model_name}: {output_dir}")
 
-    if success:
+    if comparison_success:
         logger.info(f"\n多模型对比图表: experiment_results/multi_model_comparison/")
         logger.info("\n生成的图表:")
         logger.info("  - 01_radar_chart.png          (雷达图)")
@@ -284,8 +293,10 @@ def main():
         logger.info("  - 04_lag_analysis.png         (Lag分析)")
         logger.info("  - 05_error_distribution.png   (错误分布)")
         logger.info("  - 06_comparison_table.png     (对比表格)")
+    elif comparison_success is None:
+        logger.info("\n已跳过多模型对比图表生成")
 
-    return 0 if success else 1
+    return 0 if comparison_success is not False else 1
 
 
 if __name__ == "__main__":
