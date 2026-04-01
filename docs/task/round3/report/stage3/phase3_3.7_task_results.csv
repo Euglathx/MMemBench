@@ -1,7 +1,0 @@
-Metric,Baseline,Post-Fix,Threshold,Operator,Pass,Improvement
-image_sending_rate,0.5390,1.0000,1.0000,>=,PASS,0.4610
-score_reasonability,0.6500,0.9700,0.9500,>=,PASS,0.3200
-judgment_consistency,0.7500,0.9700,0.9500,>=,PASS,0.2200
-error_propagation_rate,0.2857,0.0000,0.0500,<,PASS,0.2857
-default_retention_rate,0.7880,0.1167,0.2000,<,PASS,0.6713
-misjudgment_rate,0.1000,0.0150,0.0200,<,PASS,0.0850
